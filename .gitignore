@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment / secrets — NEVER commit real keys
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+.vite/
+
+# User data (runtime-generated, not source)
+backend/saved_recipes.json
+backend/pantry.json
+
+# Internal docs
+DECISIONS.md
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Helper scripts
+reload.sh

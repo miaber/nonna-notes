@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+google-genai>=1.0.0
+python-dotenv
+pydantic
+httpx
+beautifulsoup4

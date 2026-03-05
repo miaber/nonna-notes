@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+websockets
+google-genai>=1.0.0
+python-dotenv
+beautifulsoup4
+httpx
+python-multipart
