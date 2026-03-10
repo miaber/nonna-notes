@@ -1,8 +1,17 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 
-const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws";
+const _WS_BASE = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws";
+const _DEV_TOKEN = import.meta.env.VITE_ACCESS_TOKEN || "";
+
+async function _buildWsUrl(getToken) {
+  if (getToken) {
+    const tok = await getToken();
+    return `${_WS_BASE}?token=${encodeURIComponent(tok)}`;
+  }
+  return _DEV_TOKEN ? `${_WS_BASE}?token=${encodeURIComponent(_DEV_TOKEN)}` : _WS_BASE;
+}
 const RECIPE_AGENT_URL = import.meta.env.VITE_RECIPE_AGENT_URL || "http://localhost:8001";
-const VIDEO_FPS = 1;
+const VIDEO_FPS = 0.5; // 1 frame every 2 seconds — reduces Live API 1008/1011 disconnects
 
 export function useGeminiLive() {
   const [status, setStatus] = useState("idle");
@@ -16,7 +25,8 @@ export function useGeminiLive() {
   const [recipeSearchStatus, setRecipeSearchStatus] = useState(null); // null | "searching" | { error: string }
   const [currentMusic, setCurrentMusic] = useState(null); // null | { query: string, videoId: string|null }
   const [isSpeaking, setIsSpeaking] = useState(false);   // true while Gemini audio is playing
-  const [musicVolume, setMusicVolume] = useState(75);     // 0-100, user/AI-controlled baseline
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [musicVolume, setMusicVolume] = useState(35);     // 0-100, user/AI-controlled baseline
   const speakingRef = useRef(false);
   // Set to true when turn_complete arrives but audio is still playing.
   // The last buffer's "ended" callback reads this to clear isSpeaking.
@@ -40,6 +50,17 @@ export function useGeminiLive() {
   }, [recipeSearchStatus]);
 
   const wsRef = useRef(null);
+  const isStartingRef = useRef(false); // guard against concurrent startSession calls
+
+  // Close WS on unmount so the backend session doesn't outlive the component (HMR, page nav, etc.)
+  useEffect(() => {
+    return () => {
+      wsRef.current?.close();
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      playbackContextRef.current?.close().catch(() => {});
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const stopwatchStartedAtRef = useRef(null);
   useEffect(() => {
     const stopwatch = timers.find((t) => t.stopwatch && t.startedAt);
@@ -54,7 +75,9 @@ export function useGeminiLive() {
   const videoIntervalRef = useRef(null);
   const workletNodeRef = useRef(null);
 
-  const startSession = useCallback(async (videoElement, recipe = "", persona = "gordon", recipeFromLibrary = null, resumeDraft = false, resumeDraftStartedAt = null) => {
+  const startSession = useCallback(async (videoElement, recipe = "", persona = "nonna", recipeFromLibrary = null, resumeDraft = false, resumeDraftStartedAt = null, getToken = null) => {
+    if (isStartingRef.current) return; // prevent double-start from rapid clicks / StrictMode
+    isStartingRef.current = true;
     // Tear down any previous session first to avoid 409 ALREADY_EXISTS
     clearInterval(videoIntervalRef.current);
     if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) {
@@ -78,7 +101,11 @@ export function useGeminiLive() {
     setStructuredRecipe(null);
     setLiveSteps([]);
 
-    // Use saved recipe from library when "Cook this again" was used; else parse URLs via recipe-agent
+    // Normalize URLs missing protocol (e.g. "youtube.com/..." → "https://youtube.com/...")
+    const looksLikeUrl = /^(https?:\/\/|[\w-]+\.(com|org|net|io|co|me|app|dev)\b)/i.test(recipe.trim());
+    if (looksLikeUrl && !/^https?:\/\//i.test(recipe.trim())) {
+      recipe = "https://" + recipe.trim();
+    }
     const inputIsUrl = /^https?:\/\//i.test(recipe.trim());
     let recipeData = null;
     if (recipeFromLibrary?.recipe) {
@@ -91,9 +118,12 @@ export function useGeminiLive() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ input: recipe.trim(), persona }),
         });
-        if (resp.ok) recipeData = await resp.json();
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.recipe) recipeData = data;
+        }
       } catch (e) {
-        console.warn("[mise] recipe agent unavailable, falling back to raw text", e);
+        console.warn("[nonna] recipe agent unavailable, falling back to raw text", e);
       }
     }
 
@@ -101,7 +131,8 @@ export function useGeminiLive() {
 
     // Open WebSocket and request media in parallel — they're independent.
     // AudioWorklet module is pre-loaded on mount so addModule resolves from cache.
-    const ws = new WebSocket(WS_URL);
+    const wsUrl = await _buildWsUrl(getToken);
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     const wsOpenPromise = new Promise((resolve, reject) => {
@@ -170,20 +201,29 @@ export function useGeminiLive() {
         ws.send(JSON.stringify({ type: "audio", data: arrayBufferToBase64(int16.buffer) }));
       };
 
-      const videoTrack = stream.getVideoTracks()[0];
-      const imageCapture = new ImageCapture(videoTrack);
-      videoIntervalRef.current = setInterval(async () => {
+      // Cross-browser frame capture via hidden <video> element (ImageCapture only works in Chrome)
+      const videoEl = document.createElement("video");
+      videoEl.srcObject = stream;
+      videoEl.muted = true;
+      videoEl.playsInline = true;
+      await videoEl.play();
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      videoIntervalRef.current = setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        if (videoEl.readyState < videoEl.HAVE_CURRENT_DATA) return;
         try {
-          const imageBitmap = await imageCapture.grabFrame();
-          const canvas = document.createElement("canvas");
           // Send at half resolution — reduces data ~4x with negligible quality loss for cooking guidance
-          canvas.width = Math.round(imageBitmap.width / 2);
-          canvas.height = Math.round(imageBitmap.height / 2);
-          canvas.getContext("2d").drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
-          const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.7));
-          const encoded = await blobToBase64(blob);
-          ws.send(JSON.stringify({ type: "video", data: encoded }));
+          canvas.width = Math.round(videoEl.videoWidth / 2);
+          canvas.height = Math.round(videoEl.videoHeight / 2);
+          ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((blob) => {
+            if (!blob) return;
+            blobToBase64(blob).then((encoded) => {
+              if (ws.readyState === WebSocket.OPEN)
+                ws.send(JSON.stringify({ type: "video", data: encoded }));
+            });
+          }, "image/jpeg", 0.7);
         } catch {
           // frame grab failed, skip
         }
@@ -207,9 +247,20 @@ export function useGeminiLive() {
         return;
       }
 
+      if (data.type === "reconnecting") {
+        // Server is retrying after a transient Live API drop.
+        // Preserve all UI state. Show reconnecting indicator on video.
+        setIsReconnecting(true);
+        speakingRef.current = false; setIsSpeaking(false);
+        activeSourcesRef.current.forEach(s => { try { s.stop(0); } catch {} });
+        activeSourcesRef.current = [];
+        playbackContextRef.current?.close().catch(() => {});
+        playbackContextRef.current = null;
+        nextPlayTimeRef.current = 0;
+        return;
+      }
+
       if (data.type === "reset") {
-        // Server is retrying after a failed attempt — wipe any partial
-        // greeting so the new attempt starts clean.
         setTranscript([]);
         setRecipeSteps([]);
         setIngredients([]);
@@ -244,8 +295,19 @@ export function useGeminiLive() {
           const sec = Math.floor((Date.now() - startedAt) / 1000);
           ws.send(JSON.stringify({ type: "stopwatch_elapsed", seconds: sec }));
         }
-        setLiveSteps((prev) => [...prev, data.step]);
+        setLiveSteps((prev) => {
+          const pos = data.position;
+          if (pos != null && pos >= 1 && pos <= prev.length) {
+            const next = [...prev];
+            next.splice(pos - 1, 0, data.step);
+            return next;
+          }
+          return [...prev, data.step];
+        });
         setTimers((prev) => prev.filter((t) => !t.stopwatch));
+      } else if (data.type === "delete_live_ingredient") {
+        // index is 1-based
+        setIngredients((prev) => prev.filter((_, i) => i !== data.index - 1));
       } else if (data.type === "delete_live_step") {
         // step_number is 1-based
         setLiveSteps((prev) => prev.filter((_, i) => i !== data.step_number - 1));
@@ -268,12 +330,26 @@ export function useGeminiLive() {
       } else if (data.type === "set_music_volume") {
         setMusicVolume(data.volume);
       } else if (data.type === "edit_ingredient") {
+        const idx = typeof data.index === "number" ? data.index : parseInt(data.index, 10);
+        if (Number.isNaN(idx) || idx < 0) return;
+        const ing = data.ingredient || {};
+        const nextIng = {
+          amount: (ing.amount ?? "").toString().trim(),
+          item: (ing.item ?? "").toString().trim(),
+          prep: (ing.prep ?? "").toString().trim(),
+        };
         setStructuredRecipe((prev) => {
-          if (!prev) return prev;
-          const ingredients = (prev.ingredients || []).map((ing, i) =>
-            i === data.index ? { ...ing, ...data.ingredient } : ing
+          if (!prev || !Array.isArray(prev.ingredients)) return prev;
+          const ingredients = prev.ingredients.map((item, i) =>
+            i === idx ? { ...item, ...nextIng } : item
           );
           return { ...prev, ingredients };
+        });
+        setIngredients((prev) => {
+          if (idx >= prev.length) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], ...nextIng };
+          return next;
         });
       } else if (data.type === "edit_step") {
         setStructuredRecipe((prev) => {
@@ -291,6 +367,7 @@ export function useGeminiLive() {
           setStatus("connected");
           if (videoElement) videoElement.srcObject = stream;
         }
+        setIsReconnecting(false);
         if (!speakingRef.current) { speakingRef.current = true; setIsSpeaking(true); }
         enqueueAudio(data.data);
       } else if (data.type === "transcript") {
@@ -326,7 +403,8 @@ export function useGeminiLive() {
     };
 
     ws.onerror = () => setStatus("error");
-    ws.onclose = () => setStatus("idle");
+    ws.onclose = () => { setStatus("idle"); isStartingRef.current = false; };
+    ws.onopen = () => { isStartingRef.current = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleToolCall = useCallback((data) => {
@@ -339,9 +417,17 @@ export function useGeminiLive() {
           id: data.call_id,
           label: args.label,
           duration: args.duration_seconds,
-          startedAt: Date.now(), // start immediately when she sets it (user said "start")
+          startedAt: Date.now(),
         },
       ]);
+    } else if (name === "cancel_timer") {
+      setTimers((prev) => prev.filter((t) => t.label.toLowerCase() !== (args.label || "").toLowerCase()));
+    } else if (name === "edit_timer") {
+      setTimers((prev) => prev.map((t) =>
+        t.label.toLowerCase() === (args.label || "").toLowerCase()
+          ? { ...t, duration: args.new_duration_seconds, startedAt: Date.now() }
+          : t
+      ));
     } else if (name === "start_stopwatch") {
       setTimers((prev) => [
         ...prev,
@@ -370,7 +456,17 @@ export function useGeminiLive() {
         );
       });
     } else if (name === "complete_step") {
-      setCompletedSteps((prev) => new Set([...prev, args.step_number]));
+      setCompletedSteps((prev) => {
+        const next = new Set(prev);
+        for (let i = 1; i <= args.step_number; i++) next.add(i);
+        return next;
+      });
+    } else if (name === "jump_to_step") {
+      setCompletedSteps(() => {
+        const next = new Set();
+        for (let i = 1; i < args.step_number; i++) next.add(i);
+        return next;
+      });
     } else if (name === "set_recipe_steps") {
       setRecipeSteps(args.steps || []);
     } else if (name === "set_ingredients") {
@@ -480,6 +576,7 @@ export function useGeminiLive() {
     recipeSearchStatus,
     currentMusic,
     isSpeaking,
+    isReconnecting,
     musicVolume,
     startSession,
     stopSession,

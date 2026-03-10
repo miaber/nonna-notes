@@ -1,6 +1,6 @@
-# Mise — Live Cooking Assistant
+# Nonna Notes — Cook with Nonna
 
-Real-time AI sous chef powered by Gemini Live API. Watches your kitchen through your camera, listens for your questions, and responds with voice.
+Real-time AI cooking companion (Nonna) powered by Gemini Live API. Watches your kitchen through your camera, listens for your questions, and responds with voice.
 
 ## Setup
 

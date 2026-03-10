@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Interactive dev client for testing Mise over the real WebSocket/Live API.
+Interactive dev client for testing Nonna Notes over the real WebSocket/Live API.
 No mic or speakers needed — text in, text transcripts out.
 
 Usage:
@@ -36,7 +36,7 @@ async def collect(ws, first_timeout=25, idle_timeout=15):
     """Stream transcript chunks to stdout until turn_complete or timeout.
 
     Tool calls arrive in their own turn (turn_complete with no text), followed
-    by Mise's spoken response in the next turn.  We only stop on turn_complete
+    by the assistant's spoken response in the next turn.  We only stop on turn_complete
     once we've received at least one transcript chunk so we don't bail out early
     after a tool-call-only turn.
     """
@@ -55,7 +55,7 @@ async def collect(ws, first_timeout=25, idle_timeout=15):
                 timeout = idle_timeout
             elif data["type"] == "turn_complete":
                 if got_text:
-                    break  # Mise finished a spoken turn — we're done
+                    break  # Assistant finished a spoken turn — we're done
                 # Otherwise this was a tool-call-only turn; keep waiting for
                 # the follow-up text turn.
                 timeout = idle_timeout
@@ -81,7 +81,7 @@ async def main():
             enc = await fetch_img_b64(image_url)
             await ws.send(json.dumps({"type": "video", "data": enc}))
 
-        print("\nMise: ", end="", flush=True)
+        print("\nNonna: ", end="", flush=True)
         await collect(ws, first_timeout=25)
 
         loop = asyncio.get_event_loop()
@@ -116,7 +116,7 @@ async def main():
             else:
                 await ws.send(json.dumps({"type": "text", "text": user_input}))
 
-            print("Mise: ", end="", flush=True)
+            print("Nonna: ", end="", flush=True)
             await collect(ws, first_timeout=12, idle_timeout=8)
 
     print("\n[session ended]")

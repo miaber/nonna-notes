@@ -1,28 +1,100 @@
 import os
 import json
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, Form, HTTPException, UploadFile, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-from gemini_session import GeminiSession, build_system_prompt, TOOLS, _read_draft, _load_recipe_entries, _save_recipe_entries
-from recipe_fetcher import fetch_recipe, is_url
+from gemini_session import GeminiSession, build_system_prompt, TOOLS, _read_draft, is_url, parse_recipe_via_agent, _format_structured_recipe
 import pantry as pantry_store
+import storage
 
 load_dotenv()
 
 DEV_MODEL = "gemini-2.5-flash"
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "").strip()
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "").strip()
 
 app = FastAPI()
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
+_allowed_origin = os.getenv("ALLOWED_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten before submission
+    allow_origins=[_allowed_origin] if _allowed_origin != "*" else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ── Firebase Admin (lazy init) ─────────────────────────────────────────────────
+_firebase_ready = False
+
+
+def _init_firebase():
+    global _firebase_ready
+    if _firebase_ready:
+        return
+    import firebase_admin
+    if not firebase_admin._apps:
+        opts = {}
+        _bucket = os.getenv("FIREBASE_STORAGE_BUCKET", "").strip()
+        if _bucket:
+            opts["storageBucket"] = _bucket
+        firebase_admin.initialize_app(options=opts or None)
+    _firebase_ready = True
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+_bearer = HTTPBearer(auto_error=False)
+
+
+def _get_user_id(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> str:
+    """Dependency: verify token and return user_id.
+
+    - FIREBASE_PROJECT_ID set → verify Firebase ID token, return uid
+    - Otherwise → check ACCESS_TOKEN (simple string), return "default"
+    """
+    if FIREBASE_PROJECT_ID:
+        token = creds.credentials if creds else None
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing authentication token")
+        try:
+            _init_firebase()
+            import firebase_admin.auth as fb_auth
+            decoded = fb_auth.verify_id_token(token)
+            return decoded["uid"]
+        except Exception as e:
+            raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+    else:
+        # Local dev / simple token mode
+        if ACCESS_TOKEN and (not creds or creds.credentials != ACCESS_TOKEN):
+            raise HTTPException(status_code=401, detail="Invalid or missing access token")
+        return "default"
+
+
+def _get_user_id_ws(token: str | None) -> str | None:
+    """Return user_id string or None if auth fails (for WebSocket — can't raise HTTP)."""
+    if FIREBASE_PROJECT_ID:
+        if not token:
+            return None
+        try:
+            _init_firebase()
+            import firebase_admin.auth as fb_auth
+            decoded = fb_auth.verify_id_token(token)
+            return decoded["uid"]
+        except Exception:
+            return None
+    else:
+        if not ACCESS_TOKEN:
+            return "default"
+        return "default" if token == ACCESS_TOKEN else None
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -30,21 +102,9 @@ async def health():
 
 
 @app.get("/draft")
-async def get_draft():
-    """Return the current document draft if any (name, steps, ingredients — no photo blobs)."""
-    entry = _read_draft()
-    if not entry:
-        return {"draft": None}
-    r = entry.get("recipe") or {}
-    return {
-        "draft": {
-            "name": r.get("name"),
-            "steps": r.get("steps", []),
-            "ingredients": r.get("ingredients", []),
-            "updated_at": entry.get("updated_at"),
-            "started_at": entry.get("started_at"),
-        }
-    }
+async def get_draft(user_id: str = Depends(_get_user_id)):
+    """No single draft: we have multiple drafts like any recipe. Return null; use GET /recipes to list all (including drafts)."""
+    return {"draft": None}
 
 
 @app.post("/dev/chat")
@@ -67,10 +127,10 @@ async def dev_chat(
     recipe_text = None
     if recipe.strip():
         if is_url(recipe.strip()):
-            try:
-                recipe_text = await fetch_recipe(recipe.strip())
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Could not fetch recipe: {e}")
+            result = await parse_recipe_via_agent(recipe.strip(), "nonna")
+            if not result:
+                raise HTTPException(status_code=400, detail="Could not fetch recipe (recipe-agent unavailable or failed)")
+            recipe_text = _format_structured_recipe(result[0])
         else:
             recipe_text = recipe.strip()
     system_prompt = build_system_prompt(recipe_text)
@@ -78,8 +138,7 @@ async def dev_chat(
     contents = []
     if image_bytes:
         contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
-    # Use provided text, or the same greeting trigger the live session uses on startup
-    user_text = text.strip() or "Greet the user warmly and introduce yourself as Mise. Keep it to 2-3 sentences."
+    user_text = text.strip() or "Greet the user warmly and introduce yourself as Nonna. Keep it to 2-3 sentences."
     contents.append(types.Part.from_text(text=user_text))
     if not image_bytes and not text.strip() and not recipe.strip():
         raise HTTPException(status_code=400, detail="Provide at least one of: image, image_url, text, recipe")
@@ -108,13 +167,12 @@ async def dev_chat(
 
 
 @app.get("/pantry")
-async def get_pantry():
+async def get_pantry(_: str = Depends(_get_user_id)):
     return {"pantry": pantry_store.load()}
 
 
 @app.post("/pantry")
-async def update_pantry(body: dict):
-    """Add or update pantry items. Body: {"updates": [{name, status}]}"""
+async def update_pantry(body: dict, _: str = Depends(_get_user_id)):
     updates = body.get("updates", [])
     if not updates:
         raise HTTPException(status_code=400, detail="No updates provided.")
@@ -123,7 +181,7 @@ async def update_pantry(body: dict):
 
 
 @app.delete("/pantry/{name}")
-async def delete_pantry_item(name: str):
+async def delete_pantry_item(name: str, _: str = Depends(_get_user_id)):
     pantry = pantry_store.load()
     pantry = [p for p in pantry if p["name"].lower() != name.lower()]
     with open(pantry_store.PANTRY_FILE, "w") as f:
@@ -132,8 +190,7 @@ async def delete_pantry_item(name: str):
 
 
 @app.get("/pantry/recipes")
-async def pantry_recipes():
-    """Suggest recipes the user can make from their current pantry."""
+async def pantry_recipes(_: str = Depends(_get_user_id)):
     current_pantry = pantry_store.load()
     if not current_pantry:
         raise HTTPException(status_code=400, detail="Pantry is empty — add some ingredients first.")
@@ -180,50 +237,40 @@ Keep 'missing' to at most 2–3 minor items. If nothing is missing, use an empty
     return {"recipes": recipes}
 
 
-def _load_all_recipes() -> list[dict]:
-    from gemini_session import SAVED_RECIPES_PATH
-    entries = []
-    try:
-        with open(SAVED_RECIPES_PATH) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    entry = json.loads(line)
-                    if "photos" not in entry:
-                        entry["photos"] = []
-                    entries.append(entry)
-    except FileNotFoundError:
-        pass
-    return entries
-
-
-def _save_all_recipes(entries: list[dict]) -> None:
-    from gemini_session import SAVED_RECIPES_PATH
-    with open(SAVED_RECIPES_PATH, "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+def _entries_summary(entries: list[dict]) -> list[dict]:
+    """Return copies of entries with photos stripped to { step_id } only (no base64 data)."""
+    out = []
+    for e in entries:
+        copy = {**e, "photos": [{"step_id": p.get("step_id")} for p in e.get("photos") or []]}
+        out.append(copy)
+    return out
 
 
 @app.get("/recipes")
-async def get_saved_recipes():
-    """Return all saved recipes, most recent first."""
-    entries = _load_all_recipes()
-    entries.reverse()
-    return {"recipes": entries}
+async def get_saved_recipes(user_id: str = Depends(_get_user_id)):
+    """Return all saved recipes for this user, most recent first. Omits photo base64 to reduce memory and payload."""
+    entries = storage.load_entries(user_id)
+    return {"recipes": _entries_summary(entries)}
+
+
+@app.get("/recipes/{index}")
+async def get_recipe_by_index(index: int, user_id: str = Depends(_get_user_id)):
+    """Return one recipe entry with full photo data (for detail view)."""
+    entries = storage.load_entries(user_id)
+    if index < 0 or index >= len(entries):
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    return {"recipe": entries[index]}
 
 
 @app.patch("/recipes/{index}")
-async def update_recipe(index: int, body: dict):
-    """
-    Update a saved recipe by index (0 = most recent).
-    Accepted fields: notes (str), name (str), recipe (dict with any of:
-    name, description, servings, total_time_minutes, ingredients, steps, tips).
-    """
-    entries = _load_all_recipes()
-    entries.reverse()  # 0 = most recent, matches frontend
+async def update_recipe(index: int, body: dict, user_id: str = Depends(_get_user_id)):
+    entries = storage.load_entries(user_id)
     if index < 0 or index >= len(entries):
         raise HTTPException(status_code=404, detail="Recipe not found")
     entry = entries[index]
+    recipe_id = entry.get("id")
+    if not recipe_id:
+        raise HTTPException(status_code=400, detail="Recipe has no id")
     if "notes" in body:
         entry["notes"] = body["notes"]
     if "name" in body:
@@ -233,30 +280,36 @@ async def update_recipe(index: int, body: dict):
         for key in ("name", "description", "servings", "total_time_minutes", "ingredients", "steps", "tips"):
             if key in recipe_patch:
                 entry["recipe"][key] = recipe_patch[key]
-    entries.reverse()  # back to chronological order for storage
-    _save_all_recipes(entries)
-    entries.reverse()  # return most-recent-first
-    return {"recipes": entries}
+    storage.save_entry(user_id, entry)
+    entries = storage.load_entries(user_id)
+    return {"recipes": _entries_summary(entries)}
 
 
 @app.delete("/recipes/{index}")
-async def delete_recipe(index: int):
-    """Remove a saved recipe by index (0 = most recent)."""
-    entries = _load_all_recipes()
-    entries.reverse()  # 0 = most recent, matches frontend
+async def delete_recipe(index: int, user_id: str = Depends(_get_user_id)):
+    entries = storage.load_entries(user_id)
     if index < 0 or index >= len(entries):
         raise HTTPException(status_code=404, detail="Recipe not found")
-    entries.pop(index)
-    entries.reverse()  # back to chronological order for storage
-    _save_all_recipes(entries)
-    entries.reverse()
-    return {"recipes": entries}
+    entry = entries[index]
+    recipe_id = entry.get("id")
+    if not recipe_id:
+        raise HTTPException(status_code=400, detail="Recipe has no id")
+    storage.delete_entry(user_id, recipe_id)
+    entries = storage.load_entries(user_id)
+    return {"recipes": _entries_summary(entries)}
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    token: str | None = Query(default=None),
+):
+    user_id = _get_user_id_ws(token)
+    if user_id is None:
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
-    session = GeminiSession()
+    session = GeminiSession(user_id=user_id)
     try:
         await session.run(websocket)
     except WebSocketDisconnect:

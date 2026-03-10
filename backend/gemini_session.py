@@ -10,16 +10,35 @@ import httpx
 from google import genai
 from google.genai import types
 from starlette.websockets import WebSocketDisconnect
-from recipe_fetcher import fetch_recipe, is_url
+import storage
 
 load_dotenv()
 
 warnings.filterwarnings("ignore", message=".*non-data parts.*")
 
 
-MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
+_USE_VERTEX = os.getenv("USE_VERTEX_AI", "").strip().lower() in ("1", "true", "yes")
+MODEL = "gemini-live-2.5-flash-native-audio" if _USE_VERTEX else "gemini-2.5-flash-native-audio-preview-12-2025"
 RECIPE_AGENT_URL = os.getenv("RECIPE_AGENT_URL", "http://localhost:8001")
-SAVED_RECIPES_PATH = os.path.join(os.path.dirname(__file__), "saved_recipes.json")
+
+
+def is_url(value: str) -> bool:
+    return value.strip().startswith(("http://", "https://"))
+
+
+async def parse_recipe_via_agent(input_text: str, persona: str = "nonna") -> tuple[dict, str] | None:
+    """Call recipe-agent /parse. Returns (recipe_dict, source) or None on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                f"{RECIPE_AGENT_URL.rstrip('/')}/parse",
+                json={"input": input_text.strip(), "persona": persona},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return (data["recipe"], data.get("source", "url"))
+    except Exception:
+        return None
 
 
 def _sanitize_transcript(text: str) -> str:
@@ -108,7 +127,7 @@ def _build_live_recipe(
         total_time_minutes = round(total_seconds / 60) if total_seconds else None
     return {
         "name": name,
-        "description": "Documented live by Mise while you cooked.",
+        "description": "Documented live by Nonna while you cooked.",
         "servings": 2,
         "total_time_minutes": total_time_minutes,
         "ingredients": built_ingredients,
@@ -140,12 +159,12 @@ async def _youtube_search(query: str) -> str | None:
             if items:
                 return items[0]["id"]["videoId"]
     except Exception as e:
-        print(f"[mise] youtube search failed: {e}", flush=True)
+        print(f"[nonna] youtube search failed: {e}", flush=True)
     return None
 
 
-def _save_recipe_locally(recipe: dict, photos: list[dict] | None = None) -> None:
-    """Append a recipe to saved_recipes.json (newline-delimited JSON). photos: [{"step_id": int, "data": "base64..."}]."""
+def _save_recipe_locally(recipe: dict, photos: list[dict] | None = None, user_id: str = "default") -> None:
+    """Save one recipe as its own document (no append to a monolith file)."""
     photo_list = photos or []
     entry = {
         "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -153,53 +172,21 @@ def _save_recipe_locally(recipe: dict, photos: list[dict] | None = None) -> None
         "photos": photo_list,
     }
     try:
-        with open(SAVED_RECIPES_PATH, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-        print(f"[mise] recipe saved: {recipe.get('name', '?')} ({len(photo_list)} photos)", flush=True)
+        storage.save_entry(user_id, entry)
+        print(f"[nonna] recipe saved: {recipe.get('name', '?')} ({len(photo_list)} photos) user_id={user_id} storage={storage.get_storage_mode()}", flush=True)
     except Exception as e:
-        print(f"[mise] save recipe failed: {e}", flush=True)
+        print(f"[nonna] save recipe failed user_id={user_id}: {e}", flush=True)
+        raise
 
 
-def _load_recipe_entries() -> list[dict]:
-    """Load all entries from saved_recipes (including draft). Each entry has recipe, photos, and optionally draft, saved_at."""
-    entries = []
+def _read_draft(started_at: float | None = None, user_id: str = "default") -> dict | None:
+    """Load a recipe by id (started_at). No concept of 'the' current draft — pass the recipe id to resume."""
+    if started_at is None:
+        return None
     try:
-        with open(SAVED_RECIPES_PATH) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    entry = json.loads(line)
-                    if "photos" not in entry:
-                        entry["photos"] = []
-                    entries.append(entry)
-    except FileNotFoundError:
-        pass
-    return entries
-
-
-def _save_recipe_entries(entries: list[dict]) -> None:
-    """Write all entries to saved_recipes (newline-delimited JSON)."""
-    with open(SAVED_RECIPES_PATH, "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
-
-
-def _read_draft(started_at: float | None = None) -> dict | None:
-    """Return a draft entry. If started_at is given, return that specific draft; otherwise return the most recent one."""
-    try:
-        entries = _load_recipe_entries()
-        drafts = [e for e in entries if e.get("draft") and e.get("recipe")]
-        if not drafts:
-            return None
-        if started_at is not None:
-            for e in drafts:
-                if e.get("started_at") == started_at:
-                    return e
-            return None
-        # Most recent draft (last in file = most recent append)
-        return drafts[-1]
+        return storage.load_entry(user_id, str(started_at))
     except Exception as e:
-        print(f"[mise] read draft failed: {e}", flush=True)
+        print(f"[nonna] read draft failed: {e}", flush=True)
     return None
 
 
@@ -210,6 +197,7 @@ def _write_draft(
     started_at: float | None = None,
     photos: list[dict] | None = None,
     accumulated_seconds: float | None = None,
+    user_id: str = "default",
 ) -> None:
     """Write draft as a recipe-shaped entry with draft: true. Photos and accumulated_seconds persist when resuming."""
     try:
@@ -230,49 +218,75 @@ def _write_draft(
         }
         if started_at is not None:
             entry["started_at"] = started_at
+            entry["id"] = str(started_at)
+        else:
+            entry["id"] = str(time.time())
+            entry["started_at"] = float(entry["id"])
         if accumulated_seconds is not None:
             entry["accumulated_seconds"] = accumulated_seconds
-        # Replace only the draft for THIS session (same started_at); keep other drafts untouched
-        entries = _load_recipe_entries()
-        entries = [e for e in entries if not (e.get("draft") and e.get("started_at") == (started_at or entry.get("started_at")))]
-        entries.append(entry)
-        _save_recipe_entries(entries)
+        storage.save_entry(user_id, entry)
     except Exception as e:
-        print(f"[mise] write draft failed: {e}", flush=True)
+        print(f"[nonna] write draft failed: {e}", flush=True)
 
 
-def _clear_draft() -> None:
-    """Remove the draft entry from saved recipes (draft: true)."""
-    try:
-        entries = [e for e in _load_recipe_entries() if not e.get("draft")]
-        if len(entries) != len(_load_recipe_entries()):
-            _save_recipe_entries(entries)
-    except Exception as e:
-        print(f"[mise] clear draft failed: {e}", flush=True)
+def _clear_draft(user_id: str = "default") -> None:
+    """No-op: there is no single draft to clear. Drafts are just recipes with draft=true."""
+    pass
 
 
 # ── Persona prompts ───────────────────────────────────────────────────────────
 
 # Shared by both personas; only personality differs below.
 COMMON_BASE = """\
-You are in a voice session: the user hears you only when you speak. Every time the user says something, you MUST reply out loud with spoken audio. Never respond with only internal thought — always speak your response so the user can hear it.
-Keep responses SHORT — 1-2 sentences unless giving step-by-step instructions. Never repeat yourself. Never ask the same question twice in a row. Greet the user only once at the start of the session.
-TOOL CALLS ARE THE ONLY WAY ACTIONS HAPPEN. Never say you did something (saved, edited, recorded, added, started) without actually calling the corresponding tool in that same response. Saying it without calling the tool does nothing.
-Take photos proactively — no need to ask. Never tell the user to adjust the camera or ask for a better angle.
-If the user asks to play music or put something on, call play_music(query) with a descriptive YouTube search query. If they ask to stop or turn off the music, call stop_music(). If they ask to lower, raise, or set the volume, call set_music_volume(volume) with a value 0–100."""
+You are in a real-time voice session. The user hears you ONLY when you speak aloud.
+Keep responses SHORT — 1-2 sentences max. Never repeat yourself. Never say the same thing twice in different words. Greet the user only once at the start.
+TOOL CALLS ARE THE ONLY WAY ACTIONS HAPPEN. Never say you did something without calling the tool.
+Prompt the user often to show you what they're doing on the current step so you can take a picture and give feedback — e.g. "Show Nonna what you have there, tesoro!" or "Let me see! Hold it up so I can take a picture." Wait until the user responds or you have a good view of the dish before taking the photo — do not capture blindly. When you do take a picture, say so aloud first (e.g. "I'm taking a picture!", "Let me get a picture of that!"), then call capture_step_photo, then give brief feedback (e.g. "Bellissimo! I got it."). Do this at least once per step and more often on longer steps. Never tell the user to adjust the camera in a demanding way.
+If the user asks to play music, call play_music(query). Stop: stop_music(). Volume: set_music_volume(volume 0–100).
+You may suggest playing music once at the start of a session if none is playing. Once music is already playing, do NOT suggest more music or ask about changing it — only respond to music requests from the user.
+
+PACING — THE SINGLE MOST IMPORTANT RULE:
+You are a PASSIVE assistant. You follow the user's lead. You do NOT drive the pace.
+When the user has spoken, you MUST acknowledge or answer briefly (one short sentence). Do not stay silent when they've just said something — give a quick "Got it.", "Alright, tesoro.", or a one-sentence answer, then stop. After that, wait for them to speak again.
+Never end your turn with no response when the user has just spoken — always say at least one short sentence (or call a tool if that's the right action). Silence is only when they have not spoken yet.
+Your default state is WAITING. You only speak when the user speaks to you first.
+
+When following a recipe:
+• YOU know the recipe steps. The user does NOT need to tell you what the next step is — YOU read it to them.
+• Read one step. Then wait. When the user says anything (e.g. "okay", "got it", a comment, a question), acknowledge briefly in one short sentence, then stop. Do not leave them hanging — if they spoke, you respond.
+• The ONLY user phrases that mean "go to next step": "next", "done", "next step", "what's next", "move on", "let's continue", "finished", "I'm done".
+• Everything else means STAY on the current step and do NOT advance — but you still acknowledge: "okay"/"got it"/"sure"/"alright" = reply with a brief "Got it." or "Alright."; questions = answer in one sentence; comments = respond briefly in one sentence. Then stop.
+• Silence = wait. Only when they have not spoken do you say nothing.
+• NEVER say: "it looks like you're done", "ready for the next step?", "shall we move on?", "let me know when you're done", "whenever you're ready". These are ALL forbidden.
+• NEVER ask the user "what is the next step?" or "what step are you on?" — YOU are the one who knows the recipe. If they jump ahead, use jump_to_step.
+• If the user says "I'm not on that step" / "go back" / corrects you: stop, apologize, ask where they are, call jump_to_step(step_number), then read that step and wait.
+• If the user says they're already on a specific step: call jump_to_step(step_number), read that step, and wait.
+
+SPEAKING STYLE:
+• Say it ONCE. Never repeat or rephrase what you just said.
+• CRITICAL: NEVER speak and call a tool in the same response. Tool calls must be SILENT — send the tool call with NO speech attached. After the tool result returns, THEN you may speak.
+• After calling a tool (complete_step, set_timer, etc.), do NOT narrate what the tool did. The user can see the UI update.
+• When transitioning to the next step, say ONLY the new step instruction. Do NOT say "great job on step 3, now moving to step 4 where we..." — just read step 4.
+
+CAMERA / VIDEO:
+• You receive low-res video frames, but they are often blurry, dark, or pointed away from the food. You are bad at interpreting video — err on the side of never assuming the user is doing anything based on what you see.
+• Do NOT narrate what the user is doing ("I see you're stirring", "looks like you've added the salt", "you're chopping"). Only their words tell you: they say "next" or "done" = they finished the step; anything else = assume they have NOT. Never infer actions from video or silence.
+• NEVER pretend to see something you cannot see. If the frame is unclear, dark, or doesn't show food, say NOTHING about what you see. Do not fabricate visual observations.
+• Only comment on what you see if the user explicitly asks ("can you see this?") or for safety (e.g. smoke, burning). When you do, hedge: "it looks like…", "is that…?"
+• If the user corrects you about what you see, accept immediately."""
 
 GORDON_PERSONALITY = """\
-You are Mise, a savage British chef in the style of Gordon Ramsay at his most brutal.
+You are a savage British chef in the style of Gordon Ramsay at his most brutal.
 Impatient, sharp-tongued, appalled by mediocrity. Use real Ramsay-style insults:
 "This is a disaster.", "Bloody hell.", "What IS that?", "You donkey!", "It's DRY.", "Disgusting."
 Short. Brutal. No softening. You acknowledge good work only briefly and grudgingly.
-When you see food through the camera, tear it apart first, then explain how to fix it."""
+When you comment on what you see through the camera, stay in character but hedge — e.g. "Is that burnt? It looks like it might be burnt. Bloody hell." rather than asserting facts you're unsure of."""
 
 NONNA_PERSONALITY = """\
 You are Nonna, a dramatic Italian grandmother who has cooked since 1974.
 LANGUAGE RULE: Speak in English sentences — never a full sentence in Italian. But sprinkle Italian words and phrases freely throughout your English for flavour: allora, dai, mamma mia, certo, uffa, bene, Madonna, bellissimo, andiamo, prego, che disastro, bravo, coraggio, vabbè, guarda — use them often as exclamations, transitions, and asides. The more Italian seasoning, the better — just keep the actual sentences in English.
 Give your English a thick Italian accent flavour: drop articles ("Is very important!"), add "-a" to words ("you must-a stir!", "is-a no good"), use third person ("Nonna would never!", "Nonna is watching you!"), address the user as "cara" or "tesoro". Reference your village in Calabria and your mother's wooden spoon. Be warm and loving but deeply offended by bad technique.
-When you see food through the camera, gasp dramatically, then guide lovingly."""
+When you comment on what you see through the camera, stay in character but hedge — e.g. "Mamma mia, is that…? It looks-a like maybe you are burning it, tesoro!" rather than asserting facts you're unsure of."""
 
 PERSONAS = {
     "gordon": {"base": GORDON_PERSONALITY + "\n\n" + COMMON_BASE, "voice": "Algieba"},
@@ -296,6 +310,29 @@ TOOLS = [
                 ),
             ),
             types.FunctionDeclaration(
+                name="cancel_timer",
+                description="Cancel/remove an active timer. Call when the user says to cancel, remove, or stop a specific timer (e.g. 'cancel the pasta timer', 'remove that timer').",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "label": types.Schema(type="STRING", description="Label of the timer to cancel — match the label used in set_timer"),
+                    },
+                    required=["label"],
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="edit_timer",
+                description="Change the duration of an active timer. Call when the user says to add/remove time or change a timer (e.g. 'add 5 minutes to the timer', 'make it 10 minutes instead').",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "label": types.Schema(type="STRING", description="Label of the timer to edit"),
+                        "new_duration_seconds": types.Schema(type="INTEGER", description="New total duration in seconds"),
+                    },
+                    required=["label", "new_duration_seconds"],
+                ),
+            ),
+            types.FunctionDeclaration(
                 name="start_stopwatch",
                 description="Document mode: start an elapsed-time stopwatch when the cook begins a timed step (e.g. 'browning for 2 minutes'). When they finish, call add_live_step without timer_seconds — the app fills elapsed time. Only for explicitly timed steps.",
                 parameters=types.Schema(
@@ -308,7 +345,7 @@ TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="complete_step",
-                description="Mark a recipe step as done.",
+                description="Mark a recipe step as done and advance to the next step.\n**Invocation Condition:** Invoke this tool *only after* the user has unmistakably said one of these exact phrases: 'done', 'next', 'next step', 'what's next', 'move on', 'finished', 'I'm done'. Do NOT invoke for any other user input. **CRITICAL: Call this tool SILENTLY with no speech. Do not say anything in the same turn as calling this tool. After the tool result returns, then read the next step.**",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
@@ -318,8 +355,19 @@ TOOLS = [
                 ),
             ),
             types.FunctionDeclaration(
+                name="jump_to_step",
+                description="Jump to a specific step when the user says they are already on a different step (e.g. 'I'm on step 7', 'skip to step 5'). Marks all prior steps as complete and sets the given step as the current one.\n**CRITICAL: Call this tool SILENTLY with no speech. Do not say anything in the same turn as calling this tool. After the tool result returns, then read the requested step.**",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "step_number": types.Schema(type="INTEGER", description="The step number the user is currently on"),
+                    },
+                    required=["step_number"],
+                ),
+            ),
+            types.FunctionDeclaration(
                 name="fetch_recipe",
-                description="Look up and display a recipe. ONLY way to provide a recipe — never recite one yourself. Ask 2+ clarifying questions first and wait for answers before calling.",
+                description="Look up and display a recipe. ONLY way to provide a recipe — never recite one yourself. NEVER call this in the same turn as asking questions — you must ask, then STOP and WAIT for the user to reply, then call this tool in a separate turn.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
@@ -330,12 +378,13 @@ TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="add_live_step",
-                description="Document mode: record a cooking step. Call this in the same turn whenever you narrate a step — if you say it, you must call this. Saying the step without calling the tool does not record it. Ask what they're doing only if genuinely unclear. Include timer_seconds only when they stated a duration.",
+                description="Document mode: record a cooking step. Call this in the same turn whenever you narrate a step — if you say it, you must call this. Saying the step without calling the tool does not record it. Ask what they're doing only if genuinely unclear. Include timer_seconds only when they stated a duration. Use position to insert between existing steps.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
                         "instruction": types.Schema(type="STRING", description="What the cook just did"),
                         "timer_seconds": types.Schema(type="INTEGER", description="Optional. Only when the user explicitly said a duration for this step (e.g. 30 for '30 seconds', 300 for '5 minutes'). Omit for steps with no stated time; omit when you used start_stopwatch (app fills elapsed)."),
+                        "position": types.Schema(type="INTEGER", description="Optional. 1-based position to insert at. Omit to append at end. Use when inserting a step between existing ones."),
                     },
                     required=["instruction"],
                 ),
@@ -378,6 +427,17 @@ TOOLS = [
                 ),
             ),
             types.FunctionDeclaration(
+                name="delete_live_ingredient",
+                description="Document mode: remove a recorded ingredient by its 1-based position in the list. Use when the user says an ingredient was wrong or shouldn't be there.",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "index": types.Schema(type="INTEGER", description="1-based position of the ingredient to remove"),
+                    },
+                    required=["index"],
+                ),
+            ),
+            types.FunctionDeclaration(
                 name="set_draft_name",
                 description="Document mode: call when the user names the recipe they're making.",
                 parameters=types.Schema(
@@ -401,12 +461,12 @@ TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="save_recipe_to_library",
-                description="Save the current recipe to My Recipes. Call when the user asks to save or keep it. Saying 'saved' without calling this tool does nothing.",
+                description="Save the current recipe to My Recipes. REQUIRED: When the user says save, add to my recipes, or keep this recipe, you MUST call this tool in the SAME turn. Replying 'I saved it' or 'Done' without calling this tool does NOT save — the recipe will not appear in My Recipes. Always call save_recipe_to_library when the user asks to save.",
                 parameters=types.Schema(type="OBJECT", properties={}),
             ),
             types.FunctionDeclaration(
                 name="capture_step_photo",
-                description="Save a photo from the camera. Call immediately when user asks to take a photo — not calling this does NOT save it. Also take photos at end of steps and when plating. Skip if only a recipe name exists (no steps yet). Use step_number only for steps that exist; omit for on-demand shots.",
+                description="Save a photo from the camera. Only call when the user has shown you the dish (e.g. after you asked to see it) or you have a clear view — wait for their response or a good view; do not capture right after asking. Before calling, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'). Then call this tool, then give brief feedback. Also call when user explicitly asks to take a photo (say you're taking it first). Use step_number for the current step when in recipe mode; omit for on-demand shots. Skip if only a recipe name exists (no steps yet).",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
@@ -447,15 +507,15 @@ TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="edit_step",
-                description="Change a step in the current recipe. Step id is 1-based.",
+                description="Change a step in the current recipe (1-based step number). Use when the user wants to change the instruction or add/change a time. To add a time to a step that doesn't have one (e.g. 'add 5 mins to step 2'), pass step_number and timer_seconds only (e.g. timer_seconds=300 for 5 min); omit instruction and the existing step text is kept.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
                         "step_number": types.Schema(type="INTEGER", description="Step id (1-based) to update"),
-                        "instruction": types.Schema(type="STRING", description="Full updated instruction for this step"),
-                        "timer_seconds": types.Schema(type="INTEGER", description="Updated timer in seconds, or null if the step has no timer"),
+                        "instruction": types.Schema(type="STRING", description="Optional. New instruction text. Omit when only adding or changing the timer — existing instruction is kept."),
+                        "timer_seconds": types.Schema(type="INTEGER", description="Timer in seconds (e.g. 300 for 5 min). Pass to add a time to a step that has none, or to change the time. Omit or null to leave/remove timer."),
                     },
-                    required=["step_number", "instruction"],
+                    required=["step_number"],
                 ),
             ),
             types.FunctionDeclaration(
@@ -474,43 +534,70 @@ TOOLS = [
 ]
 
 
-def _build_system_prompt(persona: str, recipe_text: str | None) -> str:
-    p = PERSONAS.get(persona, PERSONAS["gordon"])
+def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bool = False) -> str:
+    p = PERSONAS.get(persona, PERSONAS["nonna"])
     parts = [p["base"]]
 
     if recipe_text:
         parts.append(
-            "\nA recipe has already been parsed and displayed on screen before this session started."
-            "\nGreet the user, confirm the recipe, and ask if they are ready to begin."
-            "\nWalk them through it step by step. Call complete_step(step_number) as each step is done."
-            "\nCall set_timer ONLY when the user explicitly says to start timing."
-            "\nWhen the user asks you to take a photo, you MUST call capture_step_photo — that is the only way a photo is saved. Also take photos proactively: at key moments a cook might want to look back on (after prep, mid-cook, plating, finished dish, any visually interesting state). When in doubt, take the photo — more is better than missing a moment."
-            "\nIf the user asks to save this recipe or add it to My Recipes, you MUST call save_recipe_to_library — that is the only way it gets saved; do not just say it's saved."
-            "\nIf the user asks to change an ingredient (e.g. 'use cheddar instead of swiss', 'make it 2 cups'), call edit_ingredient(index, amount, item, prep) — the index is 0-based from the ingredient list above. If they ask to change a step (e.g. 'bake for 25 minutes instead'), call edit_step(step_number, instruction, timer_seconds). NEVER say you made a change without actually calling the tool — saying it does not update the recipe on screen; only the tool call does."
-            "\nAfter calling edit_ingredient or edit_step: confirm the change in one sentence and STOP. Do not continue with the recipe or ask further questions — wait for the user to speak first."
+            "\nA recipe is displayed on screen. YOU are the guide — you know all the steps."
+            "\n"
+            "\n**Conversational Rules (follow in order):**"
+            "\n"
+            "\n1. **Greeting (one-time):** Greet the user, confirm the recipe name, ask if they are ready to begin. Wait for their response."
+            "\n"
+            "\n2. **Step Loop (repeat for every step) — THIS IS THE CORE LOOP:**"
+            "\n   a. Read the current step aloud. One brief tip max."
+            "\n   b. If the step has a time, ask: 'Want me to set a timer?' Then STOP."
+            "\n   c. STOP TALKING. Wait in unmistakable silence. Do NOT say anything else."
+            "\n   d. The user will cook. Often prompt them to show you what they're doing so you can take a picture and give feedback — e.g. 'Show me what you have there!', 'Let Nonna see so I can take a picture!' Wait until they respond or you have a good view before capturing — do not take a photo right after asking. When you do capture, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'), then call capture_step_photo, then give one short sentence of feedback. Do this at least once per step; for longer steps, ask a few times at natural moments."
+            "\n   e. They may talk to you — answer briefly, then STOP again."
+            "\n   f. Eventually the user will say 'done', 'next', 'next step', 'what's next', 'move on', or 'finished'."
+            "\n   g. ONLY when you hear one of those exact words: call complete_step SILENTLY — do NOT say anything in the same breath as the tool call. Wait for the tool result."
+            "\n   h. After the complete_step tool result comes back, THEN read the next step aloud (go to a). This must be a separate response — never bundle speech with the tool call."
+            "\n   i. If the user says ANYTHING ELSE (okay, got it, sure, asks a question, makes a comment): respond briefly and return to (c). Do NOT advance."
+            "\n"
+            "\n3. **Guardrails:**"
+            "\n   - NEVER call complete_step unless you unmistakably heard 'done'/'next'/'finished'/'move on'/'what's next'."
+            "\n   - NEVER read ahead to future steps."
+            "\n   - NEVER say 'ready for the next step?' or 'shall we move on?' or suggest the user is done."
+            "\n   - NEVER ask the user what the next step is — you already know."
+            "\n   - When you ask a question, STOP and wait for the answer. Never answer your own question."
+            "\n   - After calling any tool, do NOT narrate what it did — the user sees the UI update."
+            "\n"
+            "\n4. **Timer:** Call set_timer only when the user explicitly agrees to a timer or asks for one."
+            "\n5. **Show, photo, feedback:** Often prompt the user to show you what they're doing so you can take a picture and give feedback. Wait until they respond or you have a good view before taking the photo. When you do take it, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'), then call capture_step_photo, then give brief feedback. Do this at least once per step, and more often for longer or visual steps."
+            "\n6. **Save:** If the user asks to save the recipe, call save_recipe_to_library in the same turn. If the recipe was loaded from My Recipes (i.e. the user chose to recook it), do NOT offer to save — it is already saved."
+            "\n7. **Edits:** If the user wants to change an ingredient, call edit_ingredient. For a step, call edit_step (instruction and/or timer). If they say 'add 5 mins to step 2' (or similar), call edit_step(step_number=2, timer_seconds=300) — you can omit instruction and the current step text is kept. Confirm in one sentence, then STOP."
         )
-        parts.append(f"\n--- RECIPE ---\n{recipe_text}\n--- END RECIPE ---")
+        if from_library:
+            parts.append(f"\n--- RECIPE (from user's saved library — already saved, do NOT offer to save again) ---\n{recipe_text}\n--- END RECIPE ---")
+        else:
+            parts.append(f"\n--- RECIPE ---\n{recipe_text}\n--- END RECIPE ---")
     else:
         parts.append(
-            "\nNo recipe is loaded. Your ONLY job right now is to find the right recipe through conversation."
-            "\n\nYou MUST use the fetch_recipe tool to load any recipe — NEVER suggest, describe, or recite a recipe from your own knowledge. Every dish must come from fetch_recipe."
-            "\n\nSTRICT CONVERSATION FLOW:"
-            "\n  Step 1 — Greet and ask what they want to cook. One short question only."
-            "\n  Step 2 — Once they name a dish, ask 2–3 clarifying questions — whatever you actually need to know to find the right version of that specific dish. Ask them all in one turn, naturally."
-            "\n  Step 3 — Only AFTER the user answers, call fetch_recipe with a specific refined query"
-            " (e.g. 'quick weeknight carbonara' or 'vegetarian Thai green curry 30 minutes')."
-            "\n  Step 4 — After fetch_recipe returns, briefly read the recipe name and key details, then ask:"
-            " 'Does that sound good, or shall I find something different?' If they want another, ask a follow-up and call fetch_recipe again."
-            "\n\nNever skip Step 2. Naming the dish is NOT the same as answering the clarifying questions — you must ask them explicitly."
-"\n\nIf the user says they're free-cooking, experimenting, or just winging it: enter document mode."
-            "\n\nIMPORTANT — ambiguous cooking statements: if the user says something like 'we're making X today', 'I'm cooking X', 'let's make X', or names a dish WITHOUT asking for a recipe, do NOT automatically search for a recipe. Instead ask: 'Are you following a recipe, or shall I watch and document what you make?' Wait for their answer before doing anything."
-            "\n\nDOCUMENT MODE rules — follow these exactly:"
-            "\n• INGREDIENTS: When they mention an ingredient with an amount, call add_live_ingredient immediately in the SAME turn. If no amount given, ask 'How much?' first, then call once you have the answer. NEVER say 'adding X to the list' or 'I'll add X' without having called add_live_ingredient in that same turn — saying it does not add it."
+            "\nNo recipe is loaded. You are in one of two mutually exclusive modes — determine which from the user's words:"
+            "\n\n=== IF THE USER WANTS TO DOCUMENT THEIR OWN RECIPE ==="
+            "\nTriggers: 'document my recipe', 'document what I make', 'watch and write it down', 'I'm winging it', 'free-cooking', 'experimenting', 'no recipe — just document', or they start describing/cooking without asking for a recipe."
+            "\n• You MUST use add_live_ingredient and add_live_step to record anything — your speech alone does not add ingredients or steps to the list. Every ingredient/step they mention = you call the corresponding tool in that same turn."
+            "\n• You are in DOCUMENT MODE. Do NOT call fetch_recipe. Do NOT offer to find a recipe. Do NOT ask what dish they want to cook. Start documenting immediately: as soon as they say an ingredient and amount (e.g. 'four eggs'), call add_live_ingredient in that same turn — then you may acknowledge in speech. No recipe appears until you call the tools."
+            "\n• Once you have called add_live_step or add_live_ingredient (or the user clearly said they want to document), you stay in document mode for the whole session — never call fetch_recipe."
+            "\n\n=== IF THE USER WANTS YOU TO FIND A RECIPE ==="
+            "\nTriggers: 'find me a recipe', 'I want to make X', 'recipe for lasagna', 'what can I cook with chicken', etc. — they are asking YOU to look up a recipe."
+            "\n• Greet and ask what they want to cook. When they name a dish, ask ONE clarifying question, then call fetch_recipe. Never recite a recipe yourself."
+            "\n• Only call fetch_recipe after they have answered your clarifying question. Never assume a dish name — if in doubt, ask."
+            "\n\n=== CRITICAL: ONE MODE PER SESSION ==="
+            "\n• Document mode and recipe-finding mode do NOT mix. If the user said they want to document: only use add_live_step, add_live_ingredient, set_draft_name, finalize_live_recipe — never fetch_recipe."
+            "\n• If you are already documenting (e.g. you have added steps or ingredients), do NOT call fetch_recipe for any reason."
+            "\n• Ambiguous: if they say 'we're making X today' or 'I'm cooking X' without clearly asking for a recipe, ask: 'Are you following a recipe, or shall I watch and document what you make?' Wait for their answer."
+            "\n\nDOCUMENT MODE rules (when in document mode) — follow these exactly:"
+            "\n• INGREDIENTS — CRITICAL: The ONLY way an ingredient appears on screen is when you call add_live_ingredient. Saying 'Four eggs it is' or 'I'll add that' does NOTHING — you must call the tool in the SAME turn. Example: User says 'document my egg recipe, I need four eggs' or 'four eggs' → you MUST call add_live_ingredient(amount='4', item='eggs', prep='') in that same response (you may speak after, e.g. 'Bene! Four eggs.'). When they mention an ingredient with an amount, call add_live_ingredient immediately in the SAME turn. If no amount given, ask 'How much?' first, then call once you have the answer. If the user says an ingredient was wrong or shouldn't be there, call delete_live_ingredient(index) — index is 1-based."
             "\n• STEPS: Call add_live_step whenever you describe or narrate a step the cook is doing — whether they say it, you see it on camera and say it back to them, or both. The key rule: if you narrate a step in your speech ('now you pour the water', 'Nonna sees you chopping'), you MUST also call add_live_step for it. Do NOT narrate steps you have not recorded. The only time to ask is if you genuinely cannot tell what they are doing at all."
             "\n• CORRECTING STEPS: When the user says a step was wrong, didn't happen, or needs changing: ALWAYS use delete_live_step or edit_live_step immediately — do NOT just add a new step on top of the wrong one. edit_live_step is preferred when the instruction only needs minor correction. delete_live_step is for steps that simply should not have been recorded. Step numbers are shown on screen (1-based). If the user says 'that last step was wrong', the step to fix is step number equal to the current count."
+            "\n• INSERTING STEPS: To add a step between existing ones, call add_live_step with position=N to insert at position N (pushes existing steps down). Omit position to append at the end."
             "\n• TOOL FIRST: For both ingredients and steps, call the tool BEFORE or DURING the same spoken turn. Never describe an action you are taking without the tool call happening in the same response."
             "\n• NAMES: When they name the recipe, call set_draft_name."
-            "\n• PHOTOS: Take photos at key moments — after prep, mid-cook, plating, any state worth remembering. When in doubt, take it. Only use step_number values that exist in the current recipe."
+            "\n• PHOTOS: Often prompt the user to show you what they're doing so you can take a picture and give feedback (e.g. 'Show me what you have!', 'Let Nonna see!'). Wait until they respond or you have a good view before capturing. When you do take a picture, say aloud that you're taking it (e.g. 'I'm taking a picture!'), then call capture_step_photo, then give brief feedback. Do this at key moments — after prep, mid-cook, plating — and whenever a state is worth remembering. Only use step_number values that exist in the current recipe."
             "\n• TIMERS: NEVER call set_timer in document mode. If the user mentions a duration ('boil for 5 minutes'), record it in add_live_step via timer_seconds. Do not start an actual countdown — just document the time."
             "\n• FINISH: When done, call finalize_live_recipe(name) ONCE."
         )
@@ -518,53 +605,77 @@ def _build_system_prompt(persona: str, recipe_text: str | None) -> str:
     return "\n".join(parts)
 
 
-def build_system_prompt(recipe_text: str | None, persona: str = "gordon") -> str:
+def build_system_prompt(recipe_text: str | None, persona: str = "nonna") -> str:
     """Used by /dev/chat endpoint."""
     return _build_system_prompt(persona, recipe_text)
 
 
 # Singleton client — reuses the underlying HTTP/gRPC transport across sessions
 _gemini_client: genai.Client | None = None
+_GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID", "")
+_GCP_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
 
 def _get_client() -> genai.Client:
     global _gemini_client
     if _gemini_client is None:
-        _gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        if _USE_VERTEX:
+            _gemini_client = genai.Client(vertexai=True, project=_GCP_PROJECT, location=_GCP_LOCATION)
+            print(f"[nonna] using Vertex AI (project={_GCP_PROJECT}, location={_GCP_LOCATION})", flush=True)
+        else:
+            _gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            print("[nonna] using Google AI Studio (API key)", flush=True)
     return _gemini_client
 
 
+async def _safe_send(ws, msg: str) -> bool:
+    """Send text on websocket, returning False if already closed."""
+    try:
+        await ws.send_text(msg)
+        return True
+    except Exception as e:
+        if "websocket.close" in str(e) or "websocket.send" in str(e) or "already completed" in str(e):
+            return False
+        raise
+
+
 class GeminiSession:
-    def __init__(self):
+    def __init__(self, user_id: str = "default"):
+        self.user_id = user_id
         self.client = _get_client()
         self.current_recipe: dict | None = None
         self.live_steps: list[dict] = []
         self.live_ingredients: list[dict] = []
         self.draft_name: str | None = None  # set when user gives recipe a name (set_draft_name)
         self.draft_accumulated_seconds: float = 0.0  # total time spent on this draft across sessions (restored on resume)
-        self.persona: str = "gordon"
+        self.persona: str = "nonna"
         self.last_video_frame: str | None = None  # base64
         self.step_photos: list[dict] = []  # [{"step_id": int, "data": "base64..."}]
         self._saved_recipe_name_this_session: str | None = None  # avoid duplicate saves when model calls save_recipe_to_library multiple times
+        self._recipe_already_in_library: bool = False  # True when cooking a recipe loaded from saved library
         self.active_stopwatch_label: str | None = None  # document mode: label of current count-up timer
         self.document_mode_started_at: float | None = None  # start of THIS session (reset to time.time() on every resume/start)
         self._draft_key: float | None = None  # original started_at used to identify the draft entry in saved_recipes.json (never changes on resume)
+        self._transcript_log: list[dict] = []  # [{role: "user"|"assistant", text: str}] — recent turns for reconnect context
+        self._completed_step_ids: set[int] = set()  # step IDs marked complete during this session
+        self._last_step_completed_at: float = 0  # timestamp of last complete_step call
+        self._turns_at_last_step: int = 0  # turn count when last complete_step was called
 
     async def run(self, websocket):
         raw = await websocket.receive_text()
         config_msg = json.loads(raw)
 
-        self.persona = config_msg.get("persona", "gordon")
+        self.persona = config_msg.get("persona", "nonna")
         persona = self.persona
-        p = PERSONAS.get(persona, PERSONAS["gordon"])
-        print(f"[mise] persona={persona}  voice={p['voice']}", flush=True)
+        p = PERSONAS.get(persona, PERSONAS["nonna"])
+        print(f"[nonna] persona={persona}  voice={p['voice']}", flush=True)
 
         recipe_text = await self._resolve_recipe(config_msg)
 
         if recipe_text:
-            print(f"[mise] recipe: {len(recipe_text)} chars", flush=True)
+            print(f"[nonna] recipe: {len(recipe_text)} chars", flush=True)
 
-        system_prompt = _build_system_prompt(persona, recipe_text)
-        print(f"[mise] system prompt: {len(system_prompt)} chars", flush=True)
+        system_prompt = _build_system_prompt(persona, recipe_text, from_library=self._recipe_already_in_library)
+        print(f"[nonna] system prompt: {len(system_prompt)} chars", flush=True)
 
         live_config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -580,6 +691,17 @@ class GeminiSession:
             ),
             realtime_input_config=types.RealtimeInputConfig(
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    # High start sensitivity: pick up speech easily.
+                    # High end sensitivity: stop listening quickly once user stops talking.
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    silence_duration_ms=500,
+                    prefix_padding_ms=200,
+                ),
+            ),
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow(),
             ),
         )
 
@@ -588,7 +710,7 @@ class GeminiSession:
         for attempt in range(5):
             try:
                 t0 = time.time()
-                print(f"[mise] connecting (attempt {attempt+1})…", flush=True)
+                print(f"[nonna] connecting (attempt {attempt+1})…", flush=True)
                 _cm = self.client.aio.live.connect(model=MODEL, config=live_config)
                 try:
                     session = await asyncio.wait_for(_cm.__aenter__(), timeout=CONNECT_TIMEOUT)
@@ -597,9 +719,9 @@ class GeminiSession:
                         await _cm.__aexit__(None, None, None)
                     except Exception:
                         pass
-                    print(f"[mise] connect timed out after {CONNECT_TIMEOUT}s", flush=True)
+                    print(f"[nonna] connect timed out after {CONNECT_TIMEOUT}s", flush=True)
                     raise RuntimeError(f"live.connect() timed out after {CONNECT_TIMEOUT}s")
-                print(f"[mise] connected ✓ ({time.time()-t0:.1f}s)", flush=True)
+                print(f"[nonna] connected ✓ ({time.time()-t0:.1f}s)", flush=True)
                 try:
 
                     # Drain buffered browser frames
@@ -609,41 +731,47 @@ class GeminiSession:
                         except asyncio.TimeoutError:
                             break
 
-                    # Push structured recipe to frontend before Gemini speaks
-                    recipe_json = config_msg.get("recipe_json")
-                    if recipe_json:
-                        await websocket.send_text(json.dumps({
-                            "type": "recipe",
-                            "recipe": recipe_json,
-                            "source": config_msg.get("recipe_source", "unknown"),
-                        }))
+                    is_reconnect = attempt > 0
 
-                    # Resume document draft if requested
-                    if config_msg.get("resume_draft"):
-                        draft_started_at = config_msg.get("resume_draft_started_at")
-                        draft_entry = _read_draft(started_at=draft_started_at)
-                        if draft_entry:
-                            r = draft_entry.get("recipe") or {}
-                            self.live_steps = r.get("steps") or []
-                            self.live_ingredients = r.get("ingredients") or []
-                            self.draft_name = r.get("name")
-                            self.step_photos = draft_entry.get("photos") or []
-                            self.draft_accumulated_seconds = float(draft_entry.get("accumulated_seconds") or 0)
-                            # _draft_key identifies which entry to overwrite in saved_recipes.json — stays as original started_at
-                            self._draft_key = draft_entry.get("started_at")
-                            # document_mode_started_at tracks THIS session's clock — always reset to now on resume
-                            self.document_mode_started_at = time.time()
+                    if not is_reconnect:
+                        # Push structured recipe to frontend before Gemini speaks
+                        recipe_json = config_msg.get("recipe_json") or self.current_recipe
+                        recipe_source = config_msg.get("recipe_source") or "url"
+                        if recipe_source == "saved":
+                            self._recipe_already_in_library = True
+                        if recipe_json:
                             await websocket.send_text(json.dumps({
-                                "type": "draft_loaded",
-                                "steps": self.live_steps,
-                                "ingredients": self.live_ingredients,
-                                "name": self.draft_name,
+                                "type": "recipe",
+                                "recipe": recipe_json,
+                                "source": recipe_source,
                             }))
-                            print(f"[mise] draft loaded: {len(self.live_steps)} steps, {len(self.live_ingredients)} ingredients, {len(self.step_photos)} photos", flush=True)
+
+                        # Resume document draft if requested
+                        if config_msg.get("resume_draft"):
+                            draft_started_at = config_msg.get("resume_draft_started_at")
+                            draft_entry = _read_draft(started_at=draft_started_at, user_id=self.user_id)
+                            if draft_entry:
+                                r = draft_entry.get("recipe") or {}
+                                self.live_steps = r.get("steps") or []
+                                self.live_ingredients = r.get("ingredients") or []
+                                self.draft_name = r.get("name")
+                                self.step_photos = draft_entry.get("photos") or []
+                                self.draft_accumulated_seconds = float(draft_entry.get("accumulated_seconds") or 0)
+                                self._draft_key = draft_entry.get("started_at")
+                                self.document_mode_started_at = time.time()
+                                await websocket.send_text(json.dumps({
+                                    "type": "draft_loaded",
+                                    "steps": self.live_steps,
+                                    "ingredients": self.live_ingredients,
+                                    "name": self.draft_name,
+                                }))
+                                print(f"[nonna] draft loaded: {len(self.live_steps)} steps, {len(self.live_ingredients)} ingredients, {len(self.step_photos)} photos", flush=True)
 
                     # Kick off the conversation
-                    recipe_hint = config_msg.get("recipe_hint", "").strip()
-                    if config_msg.get("resume_draft") and (self.live_steps or self.live_ingredients):
+                    if is_reconnect:
+                        trigger = self._build_reconnect_context(recipe_text)
+                        print(f"[nonna] reconnect trigger ({len(self._transcript_log)} transcript entries, {len(self._completed_step_ids)} completed steps)", flush=True)
+                    elif config_msg.get("resume_draft") and (self.live_steps or self.live_ingredients):
                         parts = ["The user is continuing a draft recipe (already visible on screen)."]
                         if self.draft_name:
                             parts.append(f"Recipe name: {self.draft_name}.")
@@ -655,13 +783,15 @@ class GeminiSession:
                         parts.append("Greet them briefly and continue documenting. Add only NEW steps and ingredients with the tools; do not re-add what is already listed.")
                         trigger = " ".join(parts)
                     elif recipe_text:
-                        trigger = "The recipe is already displayed on screen. Greet the user and check if they're ready to begin."
-                    elif recipe_hint:
-                        trigger = f'The user said they want to make something like "{recipe_hint}" but no recipe is loaded. Greet them and ask whatever clarifying questions you need to find the right version. Do NOT call fetch_recipe yet — wait for their answers first.'
+                        trigger = "The recipe is already displayed on screen. Greet the user and check if they're ready to begin. Do NOT start reading steps yet — wait until they confirm they are ready."
                     else:
-                        trigger = "No recipe is loaded. Greet the user briefly and ask what they'd like to cook. Once they name a dish, ask whatever you need to know to find the right recipe — then call fetch_recipe. Never recite a recipe yourself."
+                        recipe_hint = config_msg.get("recipe_hint", "").strip()
+                        if recipe_hint:
+                            trigger = f'The user said they want to make something like "{recipe_hint}" but no recipe is loaded. Greet them and ask whatever clarifying questions you need to find the right version. Do NOT call fetch_recipe yet — wait for their answers first.'
+                        else:
+                            trigger = "No recipe is loaded. Greet the user briefly and ask what they'd like to cook. Once they name a dish, ask whatever you need to know to find the right recipe — then call fetch_recipe. Never recite a recipe yourself."
                     await session.send_realtime_input(text=trigger)
-                    print(f"[mise] trigger sent ✓", flush=True)
+                    print(f"[nonna] trigger sent ✓", flush=True)
 
                     # Counters for logging: confirm user audio is reaching the session and debug 0-audio turns
                     self._audio_chunks_sent_to_session = 0
@@ -690,17 +820,13 @@ class GeminiSession:
                 break
             except Exception as e:
                 err = str(e)
-                print(f"[mise] FAIL: {type(e).__name__}: {err[:120]}", flush=True)
-                # 1008/1007/1011/409 = known intermittent Live API errors; retry on transient
-                if ("1008" in err or "1007" in err or "1011" in err or "409" in err or "disconnect" in err.lower() or "timed out" in err.lower()) and attempt < 4:
+                print(f"[nonna] FAIL: {type(e).__name__}: {err[:120]}", flush=True)
+                # 1006=abnormal closure, 1008/1007/1011/409 = known intermittent Live API errors; retry on transient
+                if ("1006" in err or "1008" in err or "1007" in err or "1011" in err or "409" in err or "disconnect" in err.lower() or "timed out" in err.lower()) and attempt < 4:
                     delay = 3 + attempt * 2
-                    print(f"[mise] retrying in {delay}s…", flush=True)
+                    print(f"[nonna] retrying in {delay}s…", flush=True)
                     try:
-                        await websocket.send_text(json.dumps({"type": "reset"}))
-                        await websocket.send_text(json.dumps({
-                            "type": "transcript",
-                            "text": f"[Reconnecting… ({attempt+1}/5)]\n",
-                        }))
+                        await websocket.send_text(json.dumps({"type": "reconnecting", "attempt": attempt + 1, "max_attempts": 5}))
                     except Exception:
                         pass
                     await asyncio.sleep(delay)
@@ -714,16 +840,19 @@ class GeminiSession:
             self.current_recipe = recipe_json
             return _format_structured_recipe(recipe_json)
 
-        # Fallback: raw text or URL (dev/chat endpoint or Recipe Agent unavailable)
+        # Fallback: raw text or URL (frontend parse failed or didn't run; we resolve here)
         recipe_input = (config_msg.get("recipe") or "").strip()
         if not recipe_input:
             return None
         if is_url(recipe_input):
-            try:
-                return await fetch_recipe(recipe_input)
-            except Exception as e:
-                print(f"[mise] recipe fetch failed: {e}", flush=True)
-                return None
+            persona = config_msg.get("persona") or "nonna"
+            result = await parse_recipe_via_agent(recipe_input, persona)
+            if result:
+                recipe_dict, source = result
+                self.current_recipe = recipe_dict
+                return _format_structured_recipe(recipe_dict)
+            print("[nonna] recipe fetch via agent failed", flush=True)
+            return None
         return recipe_input
 
     async def _receive_from_browser(self, websocket, session):
@@ -746,14 +875,14 @@ class GeminiSession:
                         self._audio_chunks_sent_to_session = getattr(self, "_audio_chunks_sent_to_session", 0) + 1
                         self._audio_chunks_since_last_turn = getattr(self, "_audio_chunks_since_last_turn", 0) + 1
                         if audio_in_count == 1:
-                            print("[mise] ← first audio from browser ✓ (forwarding to session)", flush=True)
+                            print("[nonna] ← first audio from browser ✓ (forwarding to session)", flush=True)
                         elif audio_in_count % 500 == 0:
-                            print(f"[mise] ← audio from browser: {audio_in_count} chunks so far", flush=True)
+                            print(f"[nonna] ← audio from browser: {audio_in_count} chunks so far", flush=True)
                         # Log first user audio in a new turn (after at least one turn_complete) so we know they're speaking
                         if getattr(self, "_turns_completed", 0) > 0 and self._audio_chunks_since_last_turn == 1:
-                            print(f"[mise] user speaking (first chunk of new turn #{self._turns_completed + 1} → session)", flush=True)
+                            print(f"[nonna] user speaking (first chunk of new turn #{self._turns_completed + 1} → session)", flush=True)
                         if audio_in_count > 0 and audio_in_count % 200 == 0:
-                            print(f"[mise] user audio → session: {self._audio_chunks_sent_to_session} total, {self._audio_chunks_since_last_turn} this turn", flush=True)
+                            print(f"[nonna] user audio → session: {self._audio_chunks_sent_to_session} total, {self._audio_chunks_since_last_turn} this turn", flush=True)
                         await session.send_realtime_input(
                             audio=types.Blob(data=audio_bytes, mime_type="audio/pcm;rate=16000")
                         )
@@ -766,13 +895,13 @@ class GeminiSession:
                         continue
                     video_in_count += 1
                     if video_in_count == 1:
-                        print("[mise] ← first video from browser ✓", flush=True)
+                        print("[nonna] ← first video from browser ✓", flush=True)
                     self.last_video_frame = data.get("data")
                     await session.send_realtime_input(
                         video=types.Blob(data=video_bytes, mime_type="image/jpeg")
                     )
                 elif t == "text":
-                    print(f"[mise] ← text from browser: {data.get('text', '')[:80]}", flush=True)
+                    print(f"[nonna] ← text from browser: {data.get('text', '')[:80]}", flush=True)
                     await session.send_realtime_input(text=data.get("text", ""))
                 elif t == "stopwatch_elapsed":
                     sec = data.get("seconds")
@@ -782,7 +911,7 @@ class GeminiSession:
                             last["timer_seconds"] = int(sec)
                             self.active_stopwatch_label = None
                             # If we already finalized, update current_recipe and re-push so total_time_minutes is set
-                            if self.current_recipe and self.current_recipe.get("description") == "Documented live by Mise while you cooked.":
+                            if self.current_recipe and self.current_recipe.get("description") == "Documented live by Nonna while you cooked.":
                                 steps = self.current_recipe.get("steps", [])
                                 if steps and len(steps) == len(self.live_steps):
                                     steps[-1]["timer_seconds"] = int(sec)
@@ -797,9 +926,9 @@ class GeminiSession:
                                     except Exception:
                                         pass
         except WebSocketDisconnect:
-            print(f"[mise] browser disconnected (audio={audio_in_count}, video={video_in_count})", flush=True)
+            print(f"[nonna] browser disconnected (audio={audio_in_count}, video={video_in_count})", flush=True)
         except Exception as e:
-            print(f"[mise] receive error: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            print(f"[nonna] receive error: {type(e).__name__}: {str(e)[:120]}", flush=True)
             if "1011" in str(e):
                 raise
 
@@ -809,9 +938,15 @@ class GeminiSession:
         response_count = 0
         seen_tool_calls: set[tuple] = set()  # dedup within a turn
         sent_transcription_this_turn = False  # True once output_transcription fired; suppresses model_turn text
+        sent_text_this_turn: set[str] = set()  # dedup identical transcript chunks within a turn
+        suppress_until_turn_complete = False  # suppress audio+transcript after step tool calls to prevent repeats
+        pending_turn_complete = False  # True after turn_complete until we use sent_text_this_turn for tool_call or next turn
+        transcript_buffer_this_turn: list[str] = []  # accumulate all chunks; send full text on turn_complete
+        spoke_in_this_response = False  # True only if we saw transcript in this same response (not a previous turn)
         while True:
           async for response in session.receive():
             response_count += 1
+            spoke_in_this_response = False  # New response: only suppress if speech and tool_call are in same response
             try:
                 sc = response.server_content
                 interrupted = sc and getattr(sc, "interrupted", False)
@@ -819,54 +954,88 @@ class GeminiSession:
                 # Interrupted: tell client first and do NOT send this response's audio (so playback stops cleanly)
                 if interrupted:
                     await websocket.send_text(json.dumps({"type": "interrupted"}))
-                    print("[mise] interrupt detected → client should stop playback", flush=True)
+                    if suppress_until_turn_complete:
+                        suppress_until_turn_complete = False
+                        print("[nonna] interrupt cleared suppress_until_turn_complete (turn was killed, no turn_complete incoming)", flush=True)
+                    else:
+                        print("[nonna] interrupt detected → client should stop playback", flush=True)
+                    audio_count = 0
+                    sent_transcription_this_turn = False
+                    transcript_buffer_this_turn.clear()
 
                 # Audio (skip if this response was an interrupt so client doesn't enqueue then immediately stop)
                 if response.data and not interrupted:
-                    audio_count += 1
-                    if audio_count == 1:
-                        print("[mise] first audio chunk received ✓", flush=True)
-                    await websocket.send_text(json.dumps({
-                        "type": "audio",
-                        "data": base64.b64encode(response.data).decode("utf-8"),
-                    }))
-
-                # Audio transcription (preferred path for native audio models)
-                if sc and sc.output_transcription and sc.output_transcription.text:
-                    txt = _sanitize_transcript(sc.output_transcription.text)
-                    if txt:
-                        sent_transcription_this_turn = True
+                    if suppress_until_turn_complete:
+                        if audio_count == 0:
+                            print("[nonna] ✂ suppressing post-tool audio", flush=True)
+                    else:
+                        audio_count += 1
+                        if audio_count == 1:
+                            print("[nonna] first audio chunk received ✓", flush=True)
                         await websocket.send_text(json.dumps({
-                            "type": "transcript", "text": txt,
+                            "type": "audio",
+                            "data": base64.b64encode(response.data).decode("utf-8"),
                         }))
 
-                # Fallback: text parts from model_turn — only if output_transcription never fired this turn
-                # (avoids duplicate when the API sends the same text via both paths in separate response objects)
-                elif sc and sc.model_turn and not sent_transcription_this_turn:
+                # Audio transcription (preferred — native audio models)
+                if sc and sc.output_transcription and sc.output_transcription.text and not suppress_until_turn_complete:
+                    if pending_turn_complete:
+                        sent_text_this_turn.clear()
+                        pending_turn_complete = False
+                    txt = _sanitize_transcript(sc.output_transcription.text)
+                    if txt and txt not in sent_text_this_turn:
+                        sent_transcription_this_turn = True
+                        sent_text_this_turn.add(txt)
+                        spoke_in_this_response = True
+                        transcript_buffer_this_turn.append(txt)
+                        await websocket.send_text(json.dumps({"type": "transcript", "text": txt}))
+
+                # Fallback: text from model_turn — skip if output_transcription already sent this text
+                if sc and sc.model_turn and not sent_transcription_this_turn and not suppress_until_turn_complete:
+                    if pending_turn_complete:
+                        sent_text_this_turn.clear()
+                        pending_turn_complete = False
                     for part in (sc.model_turn.parts or []):
                         if part.text and not getattr(part, "thought", False):
                             txt = _sanitize_transcript(part.text)
-                            if txt:
-                                await websocket.send_text(json.dumps({
-                                    "type": "transcript", "text": txt,
-                                }))
+                            if txt and txt not in sent_text_this_turn:
+                                sent_text_this_turn.add(txt)
+                                spoke_in_this_response = True
+                                transcript_buffer_this_turn.append(txt)
+                                await websocket.send_text(json.dumps({"type": "transcript", "text": txt}))
 
                 # Turn complete
                 if sc and sc.turn_complete:
+                    if suppress_until_turn_complete:
+                        suppress_until_turn_complete = False
+                        print("[nonna] suppressed post-tool speech turn ✓", flush=True)
+                    # Log full turn for reconnect context; transcript was already streamed chunk-by-chunk to the UI
+                    if transcript_buffer_this_turn:
+                        full_text = " ".join(transcript_buffer_this_turn).strip()
+                        if full_text:
+                            self._transcript_log.append({"role": "assistant", "text": full_text})
+                            if len(self._transcript_log) > 40:
+                                self._transcript_log = self._transcript_log[-30:]
+                    transcript_buffer_this_turn.clear()
                     chunks_user_sent_this_turn = getattr(self, "_audio_chunks_since_last_turn", 0)
                     self._audio_chunks_since_last_turn = 0
                     self._turns_completed = getattr(self, "_turns_completed", 0) + 1
+                    total_sent = getattr(self, "_audio_chunks_sent_to_session", 0)
                     if audio_count == 0:
-                        total_sent = getattr(self, "_audio_chunks_sent_to_session", 0)
                         print(
-                            f"[mise] turn complete (0 audio — model sent no speech) | user had sent {chunks_user_sent_this_turn} chunks this turn, {total_sent} total to session",
+                            f"[nonna] turn complete (0 audio — model sent no speech) | user had sent {chunks_user_sent_this_turn} chunks this turn, {total_sent} total to session",
                             flush=True,
                         )
                     else:
-                        print(f"[mise] turn complete ({audio_count} audio, {response_count} total responses so far)", flush=True)
+                        print(f"[nonna] turn complete ({audio_count} audio, {response_count} total responses so far)", flush=True)
+                    if total_sent > 6000:
+                        print(f"[nonna] ⚠️  session age warning: {total_sent} chunks sent — consider reconnecting if Nonna becomes unresponsive", flush=True)
                     audio_count = 0
                     sent_transcription_this_turn = False
-                    seen_tool_calls.clear()
+                    # Keep sent_text_this_turn until we process tool_call (same or next response); Vertex often streams turn_complete before tool_call.
+                    pending_turn_complete = True
+                    if not response.tool_call:
+                        seen_tool_calls.clear()
                     await websocket.send_text(json.dumps({"type": "turn_complete"}))
 
                 # Tool calls — collect all responses and send as a batch
@@ -882,16 +1051,25 @@ class GeminiSession:
                         args = _deep_convert(fc.args) if fc.args else {}
                         dedup_key = (fc.name, json.dumps(args, sort_keys=True))
                         if dedup_key in seen_tool_calls:
-                            print(f"[mise] skipping duplicate tool call: {fc.name}", flush=True)
+                            print(f"[nonna] skipping duplicate tool call: {fc.name}", flush=True)
                             # Still need to ack it so the model isn't left hanging
                             tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                             continue
                         seen_tool_calls.add(dedup_key)
-                        print(f"[mise] tool: {fc.name} args={json.dumps(args)[:120]}", flush=True)
+                        print(f"[nonna] tool: {fc.name} args={json.dumps(args)[:120]}", flush=True)
 
                         if fc.name == "fetch_recipe":
+                            # Hard guard: if we're already documenting, do not fetch — prevents double-thread confusion
+                            if self.document_mode_started_at is not None or len(self.live_steps) > 0 or len(self.live_ingredients) > 0:
+                                print("[nonna] fetch_recipe BLOCKED — already in document mode", flush=True)
+                                tool_responses.append(types.FunctionResponse(
+                                    name=fc.name,
+                                    response={"error": "DOCUMENT_MODE: You are documenting the user's recipe. Do NOT call fetch_recipe. Continue with add_live_step and add_live_ingredient only."},
+                                    id=fc.id,
+                                ))
+                                continue
                             dish = args.get("dish_name", "")
-                            await websocket.send_text(json.dumps({"type": "recipe_search_start", "query": dish}))
+                            await _safe_send(websocket, json.dumps({"type": "recipe_search_start", "query": dish}))
                             try:
                                 async with httpx.AsyncClient(timeout=30) as hx:
                                     resp = await hx.post(
@@ -901,7 +1079,7 @@ class GeminiSession:
                                     resp.raise_for_status()
                                     data = resp.json()
                                 self.current_recipe = data["recipe"]
-                                await websocket.send_text(json.dumps({
+                                await _safe_send(websocket, json.dumps({
                                     "type": "recipe",
                                     "recipe": data["recipe"],
                                     "source": data.get("source", "generated"),
@@ -925,10 +1103,10 @@ class GeminiSession:
                                             err_msg = f"HTTP {r.status_code}"
                                     except Exception:
                                         pass
-                                print(f"[mise] fetch_recipe failed: {err_msg}", flush=True)
+                                print(f"[nonna] fetch_recipe failed: {err_msg}", flush=True)
                                 if body:
-                                    print(f"[mise] response body: {body}", flush=True)
-                                await websocket.send_text(json.dumps({"type": "recipe_search_failed", "error": err_msg}))
+                                    print(f"[nonna] response body: {body}", flush=True)
+                                await _safe_send(websocket, json.dumps({"type": "recipe_search_failed", "error": err_msg}))
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
                                     response={"error": err_msg},
@@ -948,7 +1126,7 @@ class GeminiSession:
                                 if self.document_mode_started_at is None:
                                     self.document_mode_started_at = time.time()
                                 _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
-                                _write_draft(self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc)
+                                _write_draft(self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id)
                             tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                             continue
 
@@ -963,13 +1141,19 @@ class GeminiSession:
                             if self.live_steps and (self.live_steps[-1].get("instruction") or "").strip().lower() == _instr:
                                 tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                                 continue
-                            self.live_steps.append(step_args)
+                            position = step_args.pop("position", None)
+                            if position is not None and 1 <= int(position) <= len(self.live_steps):
+                                self.live_steps.insert(int(position) - 1, step_args)
+                                insert_at = int(position)
+                            else:
+                                self.live_steps.append(step_args)
+                                insert_at = len(self.live_steps)
                             _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
-                            asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc))
+                            asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
                             await websocket.send_text(json.dumps({
                                 "type": "live_step",
                                 "step": step_args,
-                                "step_number": len(self.live_steps),
+                                "position": insert_at,
                             }))
                             tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                             continue
@@ -979,7 +1163,7 @@ class GeminiSession:
                             if 1 <= step_num <= len(self.live_steps):
                                 self.live_steps.pop(step_num - 1)
                                 _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
-                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc))
+                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
                                 await websocket.send_text(json.dumps({
                                     "type": "delete_live_step",
                                     "step_number": step_num,
@@ -996,7 +1180,7 @@ class GeminiSession:
                                     updated["timer_seconds"] = args["timer_seconds"]
                                 self.live_steps[step_num - 1] = updated
                                 _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
-                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc))
+                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
                                 await websocket.send_text(json.dumps({
                                     "type": "edit_live_step",
                                     "step_number": step_num,
@@ -1014,10 +1198,23 @@ class GeminiSession:
                             if ing["item"]:
                                 self.live_ingredients.append(ing)
                                 _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
-                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc))
+                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
                                 await websocket.send_text(json.dumps({
                                     "type": "live_ingredient",
                                     "ingredient": ing,
+                                }))
+                            tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
+                            continue
+
+                        elif fc.name == "delete_live_ingredient":
+                            idx = int(args.get("index", 0))
+                            if 1 <= idx <= len(self.live_ingredients):
+                                self.live_ingredients.pop(idx - 1)
+                                _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
+                                asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
+                                await websocket.send_text(json.dumps({
+                                    "type": "delete_live_ingredient",
+                                    "index": idx,
                                 }))
                             tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                             continue
@@ -1041,14 +1238,31 @@ class GeminiSession:
                             }))
                             name = recipe.get("name", "Recipe")
                             if self._saved_recipe_name_this_session != name:
-                                _save_recipe_locally(recipe, photos=self.step_photos)
+                                # Update the draft document in place to saved (one doc from draft → saved)
+                                draft_id = str(self._draft_key or self.document_mode_started_at or time.time())
+                                entry = {
+                                    "id": draft_id,
+                                    "draft": False,
+                                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                                    "recipe": recipe,
+                                    "photos": self.step_photos or [],
+                                }
+                                storage.save_entry(self.user_id, entry)
                                 self._saved_recipe_name_this_session = name
                                 await websocket.send_text(json.dumps({"type": "recipe_saved"}))
-                            _clear_draft()
                             tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                             continue
 
                         elif fc.name == "save_recipe_to_library":
+                            print(f"[nonna] save_recipe_to_library called (current_recipe={bool(self.current_recipe)} live_steps={len(self.live_steps)} already_in_library={self._recipe_already_in_library})", flush=True)
+                            if self._recipe_already_in_library:
+                                print("[nonna] save_recipe_to_library skipped (recipe loaded from library, already saved)", flush=True)
+                                tool_responses.append(types.FunctionResponse(
+                                    name=fc.name,
+                                    response={"result": "already_saved", "message": "This recipe is already in the user's library — no need to save again."},
+                                    id=fc.id,
+                                ))
+                                continue
                             # If no finalized recipe but we have live steps (e.g. user said "save it" before finalize), build and save now
                             if not self.current_recipe and self.live_steps:
                                 _total = self.draft_accumulated_seconds
@@ -1065,8 +1279,10 @@ class GeminiSession:
                             if self.current_recipe:
                                 name = self.current_recipe.get("name", "Recipe")
                                 if self._saved_recipe_name_this_session != name:
-                                    _save_recipe_locally(self.current_recipe, photos=self.step_photos)
+                                    _save_recipe_locally(self.current_recipe, photos=self.step_photos, user_id=self.user_id)
                                     self._saved_recipe_name_this_session = name
+                                else:
+                                    print(f"[nonna] save_recipe_to_library skipped (already saved '{name}' this session)", flush=True)
                                 await websocket.send_text(json.dumps({"type": "recipe_saved"}))
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
@@ -1074,6 +1290,7 @@ class GeminiSession:
                                     id=fc.id,
                                 ))
                             else:
+                                print(f"[nonna] save_recipe_to_library no recipe to save (current_recipe empty, live_steps={len(self.live_steps)})", flush=True)
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
                                     response={"result": "no_recipe", "message": "No recipe is loaded to save."},
@@ -1096,8 +1313,13 @@ class GeminiSession:
                         elif fc.name == "edit_step":
                             step_num = args.get("step_number")
                             if step_num is not None:
+                                instruction = (args.get("instruction") or "").strip()
+                                if not instruction and self.current_recipe:
+                                    steps = self.current_recipe.get("steps") or []
+                                    if 1 <= step_num <= len(steps):
+                                        instruction = (steps[step_num - 1].get("instruction") or "").strip()
                                 step = {
-                                    "instruction": (args.get("instruction") or "").strip(),
+                                    "instruction": instruction,
                                     "timer_seconds": args.get("timer_seconds"),
                                 }
                                 await websocket.send_text(json.dumps({"type": "edit_step", "step_number": step_num, "step": step}))
@@ -1127,11 +1349,12 @@ class GeminiSession:
                             step_num = args.get("step_number")  # optional: null for on-demand photos
                             if self.last_video_frame:
                                 self.step_photos.append({"step_id": step_num, "data": self.last_video_frame})
-                                print(f"[mise] photo captured (step={step_num}); total {len(self.step_photos)} photo(s)", flush=True)
+                                self.last_video_frame = None  # free memory; next frame will overwrite when needed
+                                print(f"[nonna] photo captured (step={step_num}); total {len(self.step_photos)} photo(s)", flush=True)
                                 # Persist photo to draft immediately so it survives if the session ends before the next step
                                 if self.live_steps or self.live_ingredients:
                                     _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
-                                    asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc))
+                                    asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
                                 # Notify user immediately; photo is saved even if Live API drops with 1008 after tool response
                                 try:
                                     await websocket.send_text(json.dumps({"type": "photo_captured", "step_number": step_num}))
@@ -1147,30 +1370,117 @@ class GeminiSession:
                                 ))
                             continue
 
+                        if fc.name == "complete_step":
+                            now = time.time()
+                            elapsed = now - self._last_step_completed_at
+                            current_turns = getattr(self, "_turns_completed", 0)
+                            turns_since = current_turns - self._turns_at_last_step
+                            # Block if: (a) less than 10s since last step, OR
+                            #           (b) fewer than 2 turns have passed (model must have spoken, then user must have spoken)
+                            if self._last_step_completed_at > 0 and (elapsed < 10 or turns_since < 2):
+                                reason = f"only {elapsed:.0f}s" if elapsed < 10 else f"only {turns_since} turn(s) since last step"
+                                print(f"[nonna] BLOCKED complete_step — {reason} (need ≥2 turns)", flush=True)
+                                tool_responses.append(types.FunctionResponse(
+                                    name=fc.name,
+                                    response={"error": "BLOCKED: You must wait for the user to explicitly say 'done' or 'next' before completing a step. The user has not spoken yet. Stop and wait silently."},
+                                    id=fc.id,
+                                ))
+                                continue
+                            step_num = args.get("step_number")
+                            if step_num is not None:
+                                self._completed_step_ids.add(int(step_num))
+                            self._last_step_completed_at = now
+                            self._turns_at_last_step = current_turns
+                        elif fc.name == "jump_to_step":
+                            step_num = args.get("step_number")
+                            if step_num is not None:
+                                for i in range(1, int(step_num)):
+                                    self._completed_step_ids.add(i)
+                            self._last_step_completed_at = time.time()
+                            self._turns_at_last_step = getattr(self, "_turns_completed", 0)
                         await websocket.send_text(json.dumps({
                             "type": "tool_call",
                             "name": fc.name,
                             "args": args,
                             "call_id": fc.id,
                         }))
-                        tool_responses.append(
-                            types.FunctionResponse(
+                        if fc.name == "complete_step":
+                            tool_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                response={"result": "Step marked complete. Now read the next step aloud ONCE, then stop."},
+                                id=fc.id,
+                            ))
+                        elif fc.name == "jump_to_step":
+                            tool_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                response={"result": "Jumped to step. Now read this step aloud ONCE, then stop."},
+                                id=fc.id,
+                            ))
+                        else:
+                            tool_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 response={"result": "ok"},
                                 id=fc.id,
-                            )
-                        )
+                            ))
+
+                    # Only suppress post-tool speech when the model spoke in THIS SAME response as the tool call
+                    # (e.g. "Got it, four eggs!" + add_live_ingredient in one batch). If tool_call is in a
+                    # later response (e.g. after turn_complete), her follow-up ("Done, two cups flour") should play.
+                    model_already_spoke = spoke_in_this_response
+                    tool_names = [fc.name for fc in response.tool_call.function_calls]
 
                     # Send ALL tool responses at once so model can continue
-                    print(f"[mise] sending {len(tool_responses)} tool response(s)…", flush=True)
+                    print(f"[nonna] sending {len(tool_responses)} tool response(s) for {tool_names} (model_already_spoke={model_already_spoke})…", flush=True)
                     await session.send_tool_response(
                         function_responses=tool_responses
                     )
-                    print(f"[mise] tool responses sent ✓", flush=True)
+                    print(f"[nonna] tool responses sent ✓", flush=True)
+
+                    if model_already_spoke:
+                        suppress_until_turn_complete = True
+                        print(f"[nonna] suppressing post-tool speech (model spoke in same response as {tool_names})", flush=True)
+                    # Clear turn state now that we've used it for model_already_spoke
+                    sent_text_this_turn.clear()
+                    seen_tool_calls.clear()
+                    pending_turn_complete = False
             except Exception as e:
                 if "websocket.close" not in str(e) and "websocket.send" not in str(e):
-                    print(f"[mise] send error: {e}", flush=True)
+                    print(f"[nonna] send error: {e}", flush=True)
                 return
+
+    def _build_reconnect_context(self, recipe_text: str | None) -> str:
+        """Build a text summary for re-injecting into a fresh Live API session after reconnect."""
+        parts = []
+
+        p = PERSONAS.get(self.persona, PERSONAS["nonna"])
+        parts.append(f"REMINDER — stay in character at all times:\n{p['base']}")
+
+        parts.append("\nYou are continuing an ongoing cooking session. The user does NOT know there was any interruption "
+                      "and must NOT find out. Do NOT say 'I'm back', 'sorry about that', 'where were we', or acknowledge "
+                      "any disconnect in any way. Just seamlessly continue as if nothing happened.")
+
+        if recipe_text:
+            parts.append(f"\n--- RECIPE (already displayed on user's screen) ---\n{recipe_text}\n--- END RECIPE ---")
+
+        if self._completed_step_ids:
+            sorted_ids = sorted(self._completed_step_ids)
+            parts.append(f"\nSteps already completed: {', '.join(str(s) for s in sorted_ids)}.")
+            next_step = max(sorted_ids) + 1
+            parts.append(f"The user is currently working on step {next_step}. Wait for them to say 'done' or 'next' before advancing.")
+        else:
+            parts.append("\nNo steps completed yet.")
+
+        recent = self._transcript_log[-20:]
+        if recent:
+            convo_lines = []
+            for entry in recent:
+                prefix = "You said" if entry["role"] == "assistant" else "User said"
+                convo_lines.append(f"  {prefix}: {entry['text'][:200]}")
+            parts.append("\nRecent conversation for context:\n" + "\n".join(convo_lines))
+
+        parts.append("\nContinue seamlessly. If you were mid-step, stay on that step and wait for the user. "
+                      "Do NOT re-read the current step unless the user asks. Do NOT re-read completed steps.")
+        return "\n".join(parts)
 
     async def close(self):
         pass

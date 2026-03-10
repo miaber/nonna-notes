@@ -1,30 +1,50 @@
 import { useState, useEffect } from "react";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-export default function RecipeLibrary({ onClose, onCook, onContinueDraft }) {
+export default function RecipeLibrary({ onClose, onCook, onContinueDraft, getToken }) {
   const [recipes, setRecipes] = useState(null);
   const [detail, setDetail] = useState(null); // { index, entry }
 
+  const authHeaders = async (extra = {}) => {
+    const token = getToken ? await getToken() : null;
+    return { ...extra, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  };
+
   useEffect(() => {
-    fetch(`${API_URL}/recipes`)
-      .then((r) => r.json())
-      .then((d) => setRecipes(d.recipes ?? []))
-      .catch(() => setRecipes([]));
-  }, []);
+    (async () => {
+      try {
+        const headers = await authHeaders();
+        const r = await fetch(`${API_URL}/recipes`, { headers });
+        const d = await r.json();
+        setRecipes(d.recipes ?? []);
+      } catch {
+        setRecipes([]);
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchFullRecipe = async (index) => {
+    const headers = await authHeaders();
+    const res = await fetch(`${API_URL}/recipes/${index}`, { headers });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.recipe ?? null;
+  };
 
   const handleUpdate = async (index, patch) => {
     try {
+      const headers = await authHeaders({ "Content-Type": "application/json" });
       const res = await fetch(`${API_URL}/recipes/${index}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(patch),
       });
       const data = await res.json();
       setRecipes(data.recipes ?? []);
       if (detail?.index === index) {
-        const entry = (data.recipes ?? [])[index];
-        if (entry) setDetail({ index, entry });
+        const fullEntry = await fetchFullRecipe(index);
+        if (fullEntry) setDetail({ index, entry: fullEntry });
       }
     } catch (e) {
       console.error("Failed to save:", e);
@@ -34,7 +54,8 @@ export default function RecipeLibrary({ onClose, onCook, onContinueDraft }) {
   const handleDelete = async (index) => {
     if (!confirm("Delete this recipe from My Recipes?")) return;
     try {
-      const res = await fetch(`${API_URL}/recipes/${index}`, { method: "DELETE" });
+      const headers = await authHeaders();
+      const res = await fetch(`${API_URL}/recipes/${index}`, { method: "DELETE", headers });
       const data = await res.json();
       setRecipes(data.recipes ?? []);
       setDetail(null);
@@ -64,7 +85,11 @@ export default function RecipeLibrary({ onClose, onCook, onContinueDraft }) {
               key={i}
               index={i}
               entry={entry}
-              onClick={() => setDetail({ index: i, entry })}
+              onClick={async () => {
+                setDetail({ index: i, entry }); // open immediately with summary (no photo blobs)
+                const fullEntry = await fetchFullRecipe(i);
+                if (fullEntry != null) setDetail({ index: i, entry: fullEntry });
+              }}
             />
           ))}
         </div>
@@ -561,6 +586,8 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
                   </figure>
                 ))}
               </div>
+            ) : rawPhotos.length > 0 ? (
+              <p className="library-photos-hint">Loading photos…</p>
             ) : (
               <p className="library-photos-hint">No photos from this cook.</p>
             )}
@@ -569,7 +596,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
 
         <div className="library-detail-actions">
           {entry.draft && onContinueDraft ? (
-            <button type="button" className="library-cook-btn" onClick={() => onContinueDraft(entry.started_at ?? null)}>
+            <button type="button" className="library-cook-btn" onClick={() => onContinueDraft(entry.started_at ?? entry.id ?? null)}>
               Continue this recipe
             </button>
           ) : (

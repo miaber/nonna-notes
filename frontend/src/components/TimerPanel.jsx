@@ -1,8 +1,30 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+
+function playTimerAlarm() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const playBeep = (startTime, freq = 880, duration = 0.15) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0.25, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+    playBeep(0);
+    playBeep(0.25);
+    playBeep(0.5);
+  } catch (_) {}
+}
 
 function Timer({ timer, onStart, onDismiss }) {
   const { startedAt, duration, label, id, stopwatch } = timer;
   const pending = !stopwatch && !startedAt;
+  const hasPlayedAlarm = useRef(false);
 
   const [remaining, setRemaining] = useState(() => {
     if (stopwatch && startedAt) return null;
@@ -24,10 +46,24 @@ function Timer({ timer, onStart, onDismiss }) {
       return () => clearInterval(tick);
     }
     if (!startedAt || done) return;
-    if (remaining <= 0) { setDone(true); return; }
+    if (remaining <= 0) {
+      if (!hasPlayedAlarm.current) {
+        hasPlayedAlarm.current = true;
+        playTimerAlarm();
+      }
+      setDone(true);
+      return;
+    }
     const tick = setInterval(() => {
       setRemaining((r) => {
-        if (r <= 1) { setDone(true); return 0; }
+        if (r <= 1) {
+          if (!hasPlayedAlarm.current) {
+            hasPlayedAlarm.current = true;
+            playTimerAlarm();
+          }
+          setDone(true);
+          return 0;
+        }
         return r - 1;
       });
     }, 1000);

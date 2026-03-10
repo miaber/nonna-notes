@@ -18,7 +18,7 @@ class Step(BaseModel):
 class RecipeSchema(BaseModel):
     name: str
     description: str
-    servings: int
+    servings: Optional[int] = 2
     total_time_minutes: Optional[int] = None
     ingredients: list[Ingredient]
     steps: list[Step]

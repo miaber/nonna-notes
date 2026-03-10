@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-export default function RecipePanel({ recipe, completedSteps, editable = false, onChange }) {
+export default function RecipePanel({ recipe, completedSteps, editable = false, onChange, hideIngredients = false }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(recipe);
 
@@ -105,7 +105,7 @@ export default function RecipePanel({ recipe, completedSteps, editable = false, 
         </div>
       </div>
 
-      {(ingredients?.length > 0 || editing) && (
+      {!hideIngredients && (ingredients?.length > 0 || editing) && (
         <div className="recipe-ingredients">
           <h3 className="steps-heading">Ingredients</h3>
           <ul className="ingredients-list">
@@ -147,8 +147,18 @@ export default function RecipePanel({ recipe, completedSteps, editable = false, 
         </div>
       )}
 
-      {(steps?.length > 0 || editing) && (
+      {(steps?.length > 0 || editing) && (() => {
+        const currentStep = !editing
+          ? steps?.find((step, i) => !completedSteps?.has(step.id) && steps.slice(0, i).every((s) => completedSteps?.has(s.id)))
+          : null;
+        return (
         <div className="recipe-steps">
+          {currentStep && (
+            <div className="current-step-callout">
+              <span className="current-step-label">Now</span>
+              <span className="current-step-text">{currentStep.instruction}</span>
+            </div>
+          )}
           <h3 className="steps-heading">Steps</h3>
           <ol className="steps-list">
             {(steps || []).map((step, i) => {
@@ -186,7 +196,8 @@ export default function RecipePanel({ recipe, completedSteps, editable = false, 
             <button className="library-edit-add" onClick={addStep}>+ Add step</button>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {tips?.length > 0 && !editing && (
         <div className="recipe-tips">

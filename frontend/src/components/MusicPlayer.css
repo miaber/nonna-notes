@@ -3,11 +3,11 @@
   bottom: 80px;
   right: 16px;
   width: 280px;
-  background: #1a1a1a;
-  border: 1px solid #333;
-  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-dark);
+  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 4px 20px rgba(61, 54, 48, 0.2);
   z-index: 200;
   transition: width 0.2s ease;
 }
@@ -21,20 +21,21 @@
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
-  background: #222;
+  background: var(--surface-warm);
+  border-bottom: 1px solid var(--border);
   cursor: default;
 }
 
 .music-icon {
   font-size: 14px;
-  color: #e8b84b;
+  color: var(--accent);
   flex-shrink: 0;
 }
 
 .music-label {
   flex: 1;
   font-size: 12px;
-  color: #ccc;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -44,7 +45,7 @@
 .music-close-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-dim);
   font-size: 11px;
   cursor: pointer;
   padding: 2px 5px;
@@ -55,8 +56,8 @@
 
 .music-min-btn:hover,
 .music-close-btn:hover {
-  color: #fff;
-  background: #333;
+  color: var(--text);
+  background: rgba(61, 54, 48, 0.1);
 }
 
 .music-frame {
@@ -64,7 +65,7 @@
   width: 100%;
   height: 158px;
   border: none;
-  background: #000;
+  background: #1a1a1a;
 }
 
 .music-fallback {
@@ -74,13 +75,13 @@
 
 .music-fallback p {
   font-size: 12px;
-  color: #888;
+  color: var(--text-dim);
   margin: 0 0 10px;
 }
 
 .music-fallback a {
   font-size: 13px;
-  color: #e8b84b;
+  color: var(--accent);
   text-decoration: none;
 }
 

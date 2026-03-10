@@ -1,23 +1,38 @@
-import sys
 import os
 import json
 import re
 import asyncio
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
-
-from recipe_fetcher import fetch_recipe, is_url
+from recipe_fetcher import fetch_recipe, is_url, _youtube_video_id
 from schema import RecipeSchema
 from google import genai
+import cache as recipe_cache
+
+
+def _normalize_url_for_cache(url: str) -> str:
+    """Stable cache key for a recipe URL. YouTube URLs keyed by video ID."""
+    url = url.strip()
+    video_id = _youtube_video_id(url)
+    if video_id:
+        return f"yt:{video_id}"
+    return url.lower().rstrip("/")
+
+
 from google.genai import types
 from google.genai import errors
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "backend", ".env"))
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-# Single model for both calls; thinking disabled to avoid 15-20s latency on recipe extraction
+_USE_VERTEX = os.getenv("USE_VERTEX_AI", "").strip().lower() in ("1", "true", "yes")
+_GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID", "")
+_GCP_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
+
+if _USE_VERTEX:
+    client = genai.Client(vertexai=True, project=_GCP_PROJECT, location=_GCP_LOCATION)
+else:
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
 MODEL = "gemini-2.5-flash"
 
 SCHEMA_DESCRIPTION = """{
@@ -48,6 +63,7 @@ Schema:
 Prefer more, shorter steps over fewer long ones. Break combined instructions into separate steps (one main action per step where possible). Avoid packing multiple actions into a single step.
 Set timer_seconds to a non-null integer for steps that involve timed cooking (boiling, roasting, frying, resting, etc.).
 Set visual_checkpoint to true for steps where the cook needs to check for doneness or a specific visual state.
+If the text is from a video transcript or description, extract ingredients and steps from the speaker's instructions and ignore filler words (um, like, so, etc.).
 
 Recipe text:
 {{recipe_text}}"""
@@ -102,7 +118,7 @@ def _mock_recipe(query: str) -> tuple[RecipeSchema, str]:
     )
 
 
-async def parse_recipe(input_text: str, persona: str = "gordon") -> tuple[RecipeSchema, str]:
+async def parse_recipe(input_text: str, persona: str = "nonna") -> tuple[RecipeSchema, str]:
     """
     Parse a URL or recipe name/description into a structured RecipeSchema.
     Returns (recipe, source) where source is "url", "generated", or "mock".
@@ -119,10 +135,25 @@ async def parse_recipe(input_text: str, persona: str = "gordon") -> tuple[Recipe
     persona_hint = "Gordon Ramsay — precise, direct, professional" if persona == "gordon" else "an Italian grandmother — warm, traditional, thorough"
 
     if is_url(input_text):
+        cache_key = _normalize_url_for_cache(input_text)
+        entry = None
+        try:
+            entry = recipe_cache.get(cache_key)
+        except Exception as e:
+            print(f"[recipe-agent] cache get error (treating as miss): {e}", flush=True)
+        if entry:
+            print(f"[recipe-agent] cache hit: {cache_key[:50]}...", flush=True)
+            return (RecipeSchema.model_validate(entry["recipe"]), entry["source"])
+
         try:
             raw_text = await fetch_recipe(input_text)
             prompt = PARSE_PROMPT.replace("{recipe_text}", raw_text)
-            return await _call_gemini(prompt, "url")
+            recipe, source = await _call_gemini(prompt, "url")
+            try:
+                recipe_cache.set(cache_key, recipe.model_dump(), source)
+            except Exception as e:
+                print(f"[recipe-agent] cache set error (recipe still returned): {e}", flush=True)
+            return (recipe, source)
         except Exception as e:
             print(f"[recipe-agent] direct URL fetch failed ({e}) — retrying via grounding", flush=True)
         # Scraping failed (403, JS-rendered, etc.) — extract a dish name from the URL

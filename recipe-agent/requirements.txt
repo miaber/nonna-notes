@@ -5,3 +5,5 @@ python-dotenv
 pydantic
 httpx
 beautifulsoup4
+youtube-transcript-api
+firebase-admin

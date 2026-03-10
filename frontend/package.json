@@ -1,5 +1,5 @@
 {
-  "name": "mise",
+  "name": "nonna-notes",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "firebase": "^12.10.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
