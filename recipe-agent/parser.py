@@ -1,12 +1,16 @@
-import os
-import json
-import re
 import asyncio
+import json
+import os
+import re
 
+from pathlib import Path
+from dotenv import load_dotenv
+from google import genai
+from google.genai import errors, types
+
+import cache as recipe_cache
 from recipe_fetcher import fetch_recipe, is_url, _youtube_video_id
 from schema import RecipeSchema
-from google import genai
-import cache as recipe_cache
 
 
 def _normalize_url_for_cache(url: str) -> str:
@@ -17,12 +21,7 @@ def _normalize_url_for_cache(url: str) -> str:
         return f"yt:{video_id}"
     return url.lower().rstrip("/")
 
-
-from google.genai import types
-from google.genai import errors
-from dotenv import load_dotenv
-
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 _USE_VERTEX = os.getenv("USE_VERTEX_AI", "").strip().lower() in ("1", "true", "yes")
 _GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID", "")
@@ -48,7 +47,8 @@ SCHEMA_DESCRIPTION = """{
       "id": integer starting at 1,
       "instruction": "string — full step instruction",
       "timer_seconds": integer or null,
-      "visual_checkpoint": boolean — true if cook needs to assess doneness visually
+      "visual_checkpoint": boolean — true if cook needs to assess doneness visually,
+      "image": "string URL or null — step photo from the original recipe, if available"
     }
   ],
   "tips": ["string — optional tips array, can be empty"]
@@ -68,7 +68,6 @@ If the text is from a video transcript or description, extract ingredients and s
 Recipe text:
 {{recipe_text}}"""
 
-# Used for the grounded search+parse call — no JSON mode so we extract from text
 SEARCH_AND_PARSE_PROMPT = f"""Search the web for a recipe for "{{query}}" from a well-known cooking website (AllRecipes, BBC Good Food, Food Network, Serious Eats, Tasty, NYT Cooking, Epicurious, etc.).
 
 Read the actual recipe from the search results — copy the real ingredients and steps, do not use your own knowledge or make anything up.
@@ -90,6 +89,157 @@ Schema:
 
 Prefer more, shorter steps over fewer long ones. One main action per step where possible. Do not combine multiple actions into a single long step.
 Include realistic timer_seconds for timed steps. Set visual_checkpoint true for steps requiring visual assessment."""
+
+
+def _apply_step_images(recipe: RecipeSchema, step_images: dict[int, str]):
+    """Attach per-step images from JSON-LD to the parsed recipe.
+
+    step_images maps the original 1-based step index (from the source page) to
+    an image URL. Gemini may reorder or split steps, so we do a best-effort
+    match: if the step count matches, use direct index mapping. Otherwise, only
+    fill in images for steps whose id exists in the map.
+    """
+    if not step_images:
+        return
+    source_count = max(step_images.keys()) if step_images else 0
+    parsed_count = len(recipe.steps)
+    if parsed_count == source_count:
+        for step in recipe.steps:
+            url = step_images.get(step.id)
+            if url and not step.image:
+                step.image = url
+    else:
+        for step in recipe.steps:
+            url = step_images.get(step.id)
+            if url and not step.image:
+                step.image = url
+        # If Gemini split steps (more parsed than source), try to fill gaps
+        # by carrying forward the nearest earlier step's image
+        if parsed_count > source_count:
+            last_img = None
+            for step in recipe.steps:
+                if step.image:
+                    last_img = step.image
+                elif last_img and not step.image:
+                    step.image = last_img
+    assigned = sum(1 for s in recipe.steps if s.image)
+    if assigned:
+        print(f"[recipe-agent] attached {assigned}/{len(recipe.steps)} step image(s)", flush=True)
+
+
+async def _match_content_images_to_steps(recipe: RecipeSchema, content_images: list[dict]):
+    """Use Gemini vision to match blog post images to recipe steps.
+
+    Downloads the actual images and sends them to Gemini alongside each image's
+    surrounding HTML context (alt text, preceding paragraph) and the full list
+    of step instructions. Gemini sees the photos and understands what cooking
+    action each one depicts, producing far more accurate matches than keywords.
+    """
+    if not content_images or not recipe.steps:
+        return
+
+    import httpx
+
+    # Download images concurrently (cap at 12 to limit bandwidth/tokens)
+    candidates = content_images[:12]
+    image_parts = []
+    image_descriptions = []
+
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as http:
+        async def _fetch_img(idx: int, ci: dict):
+            try:
+                resp = await http.get(ci["url"])
+                if resp.status_code != 200 or len(resp.content) < 1000:
+                    return None
+                ct = resp.headers.get("content-type", "image/jpeg")
+                mime = ct.split(";")[0].strip()
+                if mime not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+                    mime = "image/jpeg"
+                alt = (ci.get("alt") or "").strip()
+                ctx = (ci.get("context") or "").strip()
+                desc = f"Image {idx}: "
+                if alt:
+                    desc += f'alt="{alt}" '
+                if ctx:
+                    desc += f'preceding text: "{ctx[:200]}"'
+                return (idx, resp.content, mime, desc.strip())
+            except Exception:
+                return None
+
+        results = await asyncio.gather(*[_fetch_img(i, ci) for i, ci in enumerate(candidates)])
+
+    for r in results:
+        if r is None:
+            continue
+        idx, data, mime, desc = r
+        image_parts.append((idx, types.Part.from_bytes(data=data, mime_type=mime), desc))
+
+    if not image_parts:
+        return
+
+    steps_text = "\n".join(f"Step {s.id}: {s.instruction}" for s in recipe.steps)
+
+    # Build multimodal prompt: images interleaved with their text context
+    parts: list[types.Part | str] = []
+    parts.append(
+        "You are matching recipe photos to recipe steps.\n\n"
+        "Below are photos from a recipe blog post, each with its surrounding text context "
+        "(alt text and the paragraph before it). After the photos, you'll see the recipe steps.\n\n"
+        "For each image, decide which step it best illustrates. An image may match no step "
+        "(e.g. hero/beauty shots of the finished dish, ingredient flat-lays, or unrelated photos).\n\n"
+        "Rules:\n"
+        "- Only match process/action photos (mixing, chopping, baking, etc.), not finished dish glamour shots\n"
+        "- Each step can have at most one image\n"
+        "- A composite image showing multiple stages CAN be assigned to multiple steps\n"
+        "- Assignments must respect page order: if image 3 is matched to step 2, image 5 can only match step 2 or later\n"
+        "- It is better to leave a step unmatched than to assign a wrong image\n\n"
+        "Photos:\n"
+    )
+    for idx, img_part, desc in image_parts:
+        parts.append(f"\n{desc}\n")
+        parts.append(img_part)
+
+    parts.append(f"\n\nRecipe steps:\n{steps_text}\n\n"
+                 "Return ONLY a JSON array of objects: [{\"image\": <image_index>, \"step\": <step_id>}, ...]\n"
+                 "Only include matches you're confident about. Return [] if no good matches exist.")
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=parts,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        raw = _extract_text(response).strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        matches = json.loads(raw)
+        if not isinstance(matches, list):
+            matches = []
+    except Exception as e:
+        print(f"[recipe-agent] vision matching failed: {e}", flush=True)
+        return
+
+    # Build URL lookup from image index
+    url_by_idx = {i: candidates[i]["url"] for i in range(len(candidates))}
+    step_by_id = {s.id: s for s in recipe.steps}
+
+    assigned = 0
+    for m in matches:
+        img_idx = m.get("image")
+        step_id = m.get("step")
+        if img_idx is None or step_id is None:
+            continue
+        url = url_by_idx.get(img_idx)
+        step = step_by_id.get(step_id)
+        if url and step and not step.image:
+            step.image = url
+            assigned += 1
+
+    if assigned:
+        print(f"[recipe-agent] Gemini vision matched {assigned}/{len(recipe.steps)} step(s) to images", flush=True)
 
 
 def _mock_recipe(query: str) -> tuple[RecipeSchema, str]:
@@ -146,9 +296,14 @@ async def parse_recipe(input_text: str, persona: str = "nonna") -> tuple[RecipeS
             return (RecipeSchema.model_validate(entry["recipe"]), entry["source"])
 
         try:
-            raw_text = await fetch_recipe(input_text)
+            raw_text, images, step_images, content_images = await fetch_recipe(input_text)
             prompt = PARSE_PROMPT.replace("{recipe_text}", raw_text)
             recipe, source = await _call_gemini(prompt, "url")
+            recipe.source_url = input_text.strip()
+            recipe.source_images = images
+            _apply_step_images(recipe, step_images)
+            if not step_images and content_images:
+                await _match_content_images_to_steps(recipe, content_images)
             try:
                 recipe_cache.set(cache_key, recipe.model_dump(), source)
             except Exception as e:
@@ -161,23 +316,21 @@ async def parse_recipe(input_text: str, persona: str = "nonna") -> tuple[RecipeS
         from urllib.parse import urlparse
         path_parts = [p for p in urlparse(input_text).path.replace("-", " ").split("/") if len(p) > 4]
         url_query = path_parts[-1] if path_parts else input_text
-        result = await _search_and_parse_recipe(url_query)
+        result = await _search_and_parse_recipe(url_query, source_url=input_text.strip())
         if result:
             return result
         raise ValueError(f"Could not fetch recipe from {input_text}")
 
-    # Primary: search + parse via grounding in one call
     result = await _search_and_parse_recipe(input_text)
     if result:
         return result
 
-    # Fallback: generate from Gemini's own knowledge
-    print("[recipe-agent] grounding failed — generating recipe from model knowledge", flush=True)
+    print("[recipe-agent] grounding failed — generating from model knowledge", flush=True)
     prompt = GENERATE_PROMPT.replace("{query}", input_text).replace("{persona_hint}", persona_hint)
     return await _call_gemini(prompt, "generated")
 
 
-async def _search_and_parse_recipe(query: str) -> tuple[RecipeSchema, str] | None:
+async def _search_and_parse_recipe(query: str, source_url: str | None = None) -> tuple[RecipeSchema, str] | None:
     """
     Single Gemini call with Google Search grounding: finds a real recipe on the web
     and returns it as a parsed RecipeSchema. No URL fetching — Gemini reads the content
@@ -223,11 +376,9 @@ async def _search_and_parse_recipe(query: str) -> tuple[RecipeSchema, str] | Non
         print("[recipe-agent] grounding returned empty response", flush=True)
         return None
 
-    # Strip accidental markdown fences
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-    # Extract the JSON object
     start = raw.find("{")
     end = raw.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -242,8 +393,8 @@ async def _search_and_parse_recipe(query: str) -> tuple[RecipeSchema, str] | Non
         print(f"[recipe-agent] grounding JSON parse failed: {e} — raw: {json_text[:200]}", flush=True)
         return None
 
-    # Determine if grounding actually found a real page
     source = "generated"
+    grounding_url = None
     try:
         cand = response.candidates[0] if response.candidates else None
         meta = getattr(cand, "grounding_metadata", None) if cand else None
@@ -252,12 +403,14 @@ async def _search_and_parse_recipe(query: str) -> tuple[RecipeSchema, str] | Non
         urls = [u for u in urls if u]
         if urls:
             source = "url"
-            print(f"[recipe-agent] grounding found {len(urls)} source(s): {urls[0]}", flush=True)
+            grounding_url = urls[0]
+            print(f"[recipe-agent] grounding found {len(urls)} source(s): {grounding_url}", flush=True)
         else:
             print("[recipe-agent] grounding returned no source URLs — recipe may be from model knowledge", flush=True)
     except Exception:
         pass
 
+    recipe.source_url = source_url or grounding_url
     print(f"[recipe-agent] grounding recipe: '{recipe.name}' ({len(recipe.ingredients)} ingredients, {len(recipe.steps)} steps, source={source})", flush=True)
     return recipe, source
 
@@ -306,12 +459,9 @@ async def _call_gemini(prompt: str, source: str, attempt: int = 0) -> tuple[Reci
                     continue
             raise
 
-    raw_text = _extract_text(response)
-    # Strip accidental markdown fences
-    raw_text = raw_text.strip()
+    raw_text = _extract_text(response).strip()
     if raw_text.startswith("```"):
-        raw_text = raw_text.split("\n", 1)[-1]
-        raw_text = raw_text.rsplit("```", 1)[0].strip()
+        raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
     # If we got thought fragments (e.g. '\n  "name"'), try to extract JSON from full response
     if not raw_text.strip().startswith("{"):
@@ -326,7 +476,6 @@ async def _call_gemini(prompt: str, source: str, attempt: int = 0) -> tuple[Reci
     except Exception as e:
         print(f"[recipe-agent] parse failed: raw_text={repr(raw_text[:200])} response.text={repr((response.text or '')[:200])}", flush=True)
         if attempt == 0:
-            # One retry with stricter prompt
             fix_prompt = (
                 f"The following JSON is invalid or doesn't match the required schema. "
                 f"Fix it and return ONLY valid JSON:\n\n{raw_text}\n\nError: {e}"

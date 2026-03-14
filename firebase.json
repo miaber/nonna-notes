@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "gemini-hackathon-488004",
     "public": "frontend/dist",
     "ignore": [
       "firebase.json",

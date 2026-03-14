@@ -168,7 +168,6 @@ def _migrate_from_monolith_if_needed(user_id: str) -> None:
     ids = _list_recipe_ids(user_id)
     if ids:
         return
-    # Try old NDJSON/local file
     if FIREBASE_STORAGE_BUCKET:
         _ensure_firebase()
         try:
@@ -184,7 +183,6 @@ def _migrate_from_monolith_if_needed(user_id: str) -> None:
     else:
         old_path = _old_monolith_path(user_id)
         if not old_path or not os.path.isfile(old_path):
-            # Try migrating old draft into new layout
             draft_path = _old_draft_path(user_id)
             if draft_path and os.path.isfile(draft_path):
                 try:
@@ -254,31 +252,10 @@ def load_entries(user_id: str = "default") -> list[dict]:
         if entry is None:
             continue
         entries.append(entry)
-    # Sort by saved_at (finalized) or updated_at (draft), newest first
     def _sort_key(e):
         return e.get("saved_at") or e.get("updated_at") or ""
     entries.sort(key=_sort_key, reverse=True)
     return entries
-
-
-def save_entries(entries: list[dict], user_id: str = "default") -> None:
-    """Replace saved recipes with this list. Each entry must have 'id'. Draft docs are never deleted."""
-    existing_ids = set(_list_recipe_ids(user_id))
-    new_ids = {e.get("id") for e in entries if e.get("id")}
-    for entry in entries:
-        rid = entry.get("id")
-        if not rid:
-            rid = str(time.time())
-            entry["id"] = rid
-        _save_recipe_doc(user_id, rid, entry)
-    for rid in existing_ids:
-        if rid in new_ids:
-            continue
-        doc = _load_recipe_doc(user_id, rid)
-        if doc and not doc.get("draft"):
-            _delete_recipe_doc(user_id, rid)
-    if FIREBASE_STORAGE_BUCKET:
-        print(f"[storage] save_entries: {len(entries)} recipes (user={user_id})", flush=True)
 
 
 def save_entry(user_id: str, entry: dict) -> str:

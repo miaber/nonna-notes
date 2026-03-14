@@ -23,6 +23,11 @@ build/
 # User data (runtime-generated, not source)
 backend/saved_recipes.json
 backend/pantry.json
+backend/recipes/
+
+# Firebase
+.firebase/
+firebase-debug.log
 
 # Internal docs
 DECISIONS.md

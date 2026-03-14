@@ -4,7 +4,7 @@ const API_URL = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_URL
 
 export default function RecipeLibrary({ onClose, onCook, onContinueDraft, getToken }) {
   const [recipes, setRecipes] = useState(null);
-  const [detail, setDetail] = useState(null); // { index, entry }
+  const [detail, setDetail] = useState(null); // { id, entry }
 
   const authHeaders = async (extra = {}) => {
     const token = getToken ? await getToken() : null;
@@ -24,44 +24,40 @@ export default function RecipeLibrary({ onClose, onCook, onContinueDraft, getTok
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchFullRecipe = async (index) => {
+  const fetchFullRecipe = async (recipeId) => {
     const headers = await authHeaders();
-    const res = await fetch(`${API_URL}/recipes/${index}`, { headers });
+    const res = await fetch(`${API_URL}/recipes/${encodeURIComponent(recipeId)}`, { headers });
     if (!res.ok) return null;
     const d = await res.json();
     return d.recipe ?? null;
   };
 
-  const handleUpdate = async (index, patch) => {
+  const handleUpdate = async (recipeId, patch) => {
     try {
       const headers = await authHeaders({ "Content-Type": "application/json" });
-      const res = await fetch(`${API_URL}/recipes/${index}`, {
+      const res = await fetch(`${API_URL}/recipes/${encodeURIComponent(recipeId)}`, {
         method: "PATCH",
         headers,
         body: JSON.stringify(patch),
       });
       const data = await res.json();
       setRecipes(data.recipes ?? []);
-      if (detail?.index === index) {
-        const fullEntry = await fetchFullRecipe(index);
-        if (fullEntry) setDetail({ index, entry: fullEntry });
+      if (detail?.id === recipeId) {
+        const fullEntry = await fetchFullRecipe(recipeId);
+        if (fullEntry) setDetail({ id: recipeId, entry: fullEntry });
       }
-    } catch (e) {
-      console.error("Failed to save:", e);
-    }
+    } catch {}
   };
 
-  const handleDelete = async (index) => {
+  const handleDelete = async (recipeId) => {
     if (!confirm("Delete this recipe from My Recipes?")) return;
     try {
       const headers = await authHeaders();
-      const res = await fetch(`${API_URL}/recipes/${index}`, { method: "DELETE", headers });
+      const res = await fetch(`${API_URL}/recipes/${encodeURIComponent(recipeId)}`, { method: "DELETE", headers });
       const data = await res.json();
       setRecipes(data.recipes ?? []);
       setDetail(null);
-    } catch (e) {
-      console.error("Failed to delete:", e);
-    }
+    } catch {}
   };
 
   return (
@@ -80,15 +76,14 @@ export default function RecipeLibrary({ onClose, onCook, onContinueDraft, getTok
               No saved recipes yet. Start cooking and say “Save this to my recipes” when you’re done.
             </p>
           )}
-          {recipes?.map((entry, i) => (
+          {recipes?.map((entry) => (
             <RecipeCard
-              key={i}
-              index={i}
+              key={entry.id}
               entry={entry}
               onClick={async () => {
-                setDetail({ index: i, entry }); // open immediately with summary (no photo blobs)
-                const fullEntry = await fetchFullRecipe(i);
-                if (fullEntry != null) setDetail({ index: i, entry: fullEntry });
+                setDetail({ id: entry.id, entry });
+                const fullEntry = await fetchFullRecipe(entry.id);
+                if (fullEntry != null) setDetail({ id: entry.id, entry: fullEntry });
               }}
             />
           ))}
@@ -97,16 +92,16 @@ export default function RecipeLibrary({ onClose, onCook, onContinueDraft, getTok
 
       {detail != null && (
         <RecipeDetailModal
-          index={detail.index}
+          recipeId={detail.id}
           entry={detail.entry}
           onClose={() => setDetail(null)}
           onUpdate={handleUpdate}
           onDelete={handleDelete}
-          onCook={(name, recipeObj, source) => {
-            const idx = detail.index;
+          onCook={(name, recipeObj, source, _id, prevPhotos) => {
+            const id = detail.id;
             setDetail(null);
             onClose();
-            onCook(name, recipeObj, source, idx);
+            onCook(name, recipeObj, source, id, prevPhotos);
           }}
           onContinueDraft={onContinueDraft ? (startedAt) => { setDetail(null); onClose(); onContinueDraft(startedAt); } : null}
         />
@@ -115,7 +110,7 @@ export default function RecipeLibrary({ onClose, onCook, onContinueDraft, getTok
   );
 }
 
-function RecipeCard({ index, entry, onClick }) {
+function RecipeCard({ entry, onClick }) {
   const { recipe, saved_at, updated_at, draft } = entry;
   const dateStr = saved_at || updated_at;
   const date = dateStr
@@ -146,9 +141,11 @@ function RecipeCard({ index, entry, onClick }) {
   );
 }
 
-function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, onContinueDraft }) {
+function RecipeDetailModal({ recipeId, entry, onClose, onUpdate, onDelete, onCook, onContinueDraft }) {
   const { recipe: initialRecipe, saved_at, photos: rawPhotos = [] } = entry;
   const photos = Array.isArray(rawPhotos) ? rawPhotos.filter((p) => p && p.data) : [];
+  const sourceImages = Array.isArray(initialRecipe.source_images) ? initialRecipe.source_images : [];
+  const sourceUrl = initialRecipe.source_url || null;
 
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState(initialRecipe.name ?? "");
@@ -169,6 +166,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
           instruction: s.instruction ?? "",
           timer_seconds: s.timer_seconds ?? null,
           visual_checkpoint: s.visual_checkpoint ?? false,
+          image: s.image ?? null,
         }))
       : []
   );
@@ -201,6 +199,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
             instruction: s.instruction ?? "",
             timer_seconds: s.timer_seconds ?? null,
             visual_checkpoint: s.visual_checkpoint ?? false,
+            image: s.image ?? null,
           }))
         : []
     );
@@ -219,7 +218,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
   const saveName = () => {
     setEditingName(false);
     if (nameValue.trim() && nameValue.trim() !== initialRecipe.name) {
-      onUpdate(index, { name: nameValue.trim() });
+      onUpdate(recipeId, { name: nameValue.trim() });
     }
   };
 
@@ -241,10 +240,11 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
           instruction: s.instruction.trim(),
           timer_seconds: s.timer_seconds,
           visual_checkpoint: s.visual_checkpoint,
+          image: s.image ?? null,
         })),
       tips: tips.filter((t) => t.trim()),
     };
-    onUpdate(index, { recipe: recipePatch });
+    onUpdate(recipeId, { recipe: recipePatch });
     setRecipeDirty(false);
     setIsEditing(false);
   };
@@ -270,6 +270,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
             instruction: s.instruction ?? "",
             timer_seconds: s.timer_seconds ?? null,
             visual_checkpoint: s.visual_checkpoint ?? false,
+            image: s.image ?? null,
           }))
         : []
     );
@@ -280,7 +281,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
 
   const saveNotes = () => {
     setNotesDirty(false);
-    onUpdate(index, { notes });
+    onUpdate(recipeId, { notes });
   };
 
   const addIngredient = () => setIngredients((prev) => [...prev, { amount: "", item: "", prep: "" }]);
@@ -315,6 +316,16 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
       return next;
     });
   };
+
+  const photosByStep = {};
+  const generalPhotos = [];
+  for (const photo of photos) {
+    if (photo.step_id != null) {
+      (photosByStep[photo.step_id] ??= []).push(photo);
+    } else {
+      generalPhotos.push(photo);
+    }
+  }
 
   const currentRecipe = {
     ...initialRecipe,
@@ -355,6 +366,11 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
             )}
           </h3>
           {date && <span className="library-detail-date">{date}</span>}
+          {sourceUrl && (
+            <a className="library-detail-source" href={sourceUrl} target="_blank" rel="noreferrer">
+              {sourceUrl.includes("youtube.com") || sourceUrl.includes("youtu.be") ? "YouTube" : (() => { try { return new URL(sourceUrl).hostname.replace("www.", ""); } catch { return "source"; } })()} ↗
+            </a>
+          )}
           <button type="button" className="library-detail-close" onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -363,6 +379,13 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
         <div className="library-detail-body">
           {!isEditing ? (
             <>
+              {sourceImages.length > 0 && (
+                <div className="library-photos-grid library-hero-images">
+                  {sourceImages.map((url, i) => (
+                    <img key={`src-${i}`} src={url} alt={`${initialRecipe.name}`} className="library-photo" loading="lazy" />
+                  ))}
+                </div>
+              )}
               {description && (
                 <div className="library-section">
                   <h4 className="library-section-title">Description</h4>
@@ -395,16 +418,35 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
                 <div className="library-section">
                   <h4 className="library-section-title">Steps</h4>
                   <ol className="library-steps">
-                    {steps.map((step, i) => (
-                      <li key={i}>
-                        {step.instruction}
-                        {step.timer_seconds != null && (
-                          <span className="step-timer">
-                            {" "}({Math.floor(step.timer_seconds / 60)}:{String(step.timer_seconds % 60).padStart(2, "0")})
-                          </span>
-                        )}
-                      </li>
-                    ))}
+                    {steps.map((step, i) => {
+                      const stepPhotos = photosByStep[step.id] || [];
+                      return (
+                        <li key={i}>
+                          <span>{step.instruction}</span>
+                          {step.timer_seconds != null && (
+                            <span className="step-timer">
+                              {" "}({Math.floor(step.timer_seconds / 60)}:{String(step.timer_seconds % 60).padStart(2, "0")})
+                            </span>
+                          )}
+                          {(step.image || stepPhotos.length > 0) && (
+                            <div className="step-images">
+                              {step.image && (
+                                <img src={step.image} alt="" className="step-img" loading="lazy" />
+                              )}
+                              {stepPhotos.map((photo, pi) => (
+                                <img
+                                  key={`nonna-${pi}`}
+                                  src={`data:image/jpeg;base64,${photo.data}`}
+                                  alt={`Step ${step.id}`}
+                                  className="step-img nonna-photo"
+                                  loading="lazy"
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ol>
                 </div>
               )}
@@ -568,30 +610,23 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
             )}
           </div>
 
-          <div className="library-photos-section">
-            <h4 className="library-section-title">Photos</h4>
-            {photos.length > 0 ? (
+          {generalPhotos.length > 0 && (
+            <div className="library-photos-section">
+              <h4 className="library-section-title">Photos</h4>
               <div className="library-photos-grid">
-                {photos.map((photo, i) => (
+                {generalPhotos.map((photo, i) => (
                   <figure key={i} className="library-photo-wrap">
                     <img
                       src={`data:image/jpeg;base64,${photo.data}`}
-                      alt={photo.step_id != null ? `Step ${photo.step_id}` : "Cook"}
+                      alt="Cook"
                       className="library-photo"
                       loading="lazy"
                     />
-                    {photo.step_id != null && (
-                      <figcaption className="library-photo-caption">Step {photo.step_id}</figcaption>
-                    )}
                   </figure>
                 ))}
               </div>
-            ) : rawPhotos.length > 0 ? (
-              <p className="library-photos-hint">Loading photos…</p>
-            ) : (
-              <p className="library-photos-hint">No photos from this cook.</p>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="library-detail-actions">
@@ -600,7 +635,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
               Continue this recipe
             </button>
           ) : (
-            <button type="button" className="library-cook-btn" onClick={() => onCook(currentRecipe.name, currentRecipe, "saved", index)}>
+            <button type="button" className="library-cook-btn" onClick={() => onCook(currentRecipe.name, currentRecipe, "saved", recipeId, photos)}>
               Cook this again
             </button>
           )}
@@ -608,7 +643,7 @@ function RecipeDetailModal({ index, entry, onClose, onUpdate, onDelete, onCook, 
             <button
               type="button"
               className="library-delete-btn"
-              onClick={() => onDelete(index)}
+              onClick={() => onDelete(recipeId)}
               title="Delete recipe"
             >
               Delete recipe

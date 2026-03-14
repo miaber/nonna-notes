@@ -6,12 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from google import genai
 from google.genai import types
+from pathlib import Path
 from dotenv import load_dotenv
 from gemini_session import GeminiSession, build_system_prompt, TOOLS, _read_draft, is_url, parse_recipe_via_agent, _format_structured_recipe
 import pantry as pantry_store
 import storage
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 DEV_MODEL = "gemini-2.5-flash"
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "").strip()
@@ -29,21 +30,9 @@ app.add_middleware(
 )
 
 # ── Firebase Admin (lazy init) ─────────────────────────────────────────────────
-_firebase_ready = False
-
-
 def _init_firebase():
-    global _firebase_ready
-    if _firebase_ready:
-        return
-    import firebase_admin
-    if not firebase_admin._apps:
-        opts = {}
-        _bucket = os.getenv("FIREBASE_STORAGE_BUCKET", "").strip()
-        if _bucket:
-            opts["storageBucket"] = _bucket
-        firebase_admin.initialize_app(options=opts or None)
-    _firebase_ready = True
+    """Reuse storage.py's initializer so storageBucket is always configured."""
+    storage._ensure_firebase()
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -253,24 +242,20 @@ async def get_saved_recipes(user_id: str = Depends(_get_user_id)):
     return {"recipes": _entries_summary(entries)}
 
 
-@app.get("/recipes/{index}")
-async def get_recipe_by_index(index: int, user_id: str = Depends(_get_user_id)):
+@app.get("/recipes/{recipe_id}")
+async def get_recipe_by_id(recipe_id: str, user_id: str = Depends(_get_user_id)):
     """Return one recipe entry with full photo data (for detail view)."""
-    entries = storage.load_entries(user_id)
-    if index < 0 or index >= len(entries):
+    entry = storage.load_entry(user_id, recipe_id)
+    if not entry:
         raise HTTPException(status_code=404, detail="Recipe not found")
-    return {"recipe": entries[index]}
+    return {"recipe": entry}
 
 
-@app.patch("/recipes/{index}")
-async def update_recipe(index: int, body: dict, user_id: str = Depends(_get_user_id)):
-    entries = storage.load_entries(user_id)
-    if index < 0 or index >= len(entries):
+@app.patch("/recipes/{recipe_id}")
+async def update_recipe(recipe_id: str, body: dict, user_id: str = Depends(_get_user_id)):
+    entry = storage.load_entry(user_id, recipe_id)
+    if not entry:
         raise HTTPException(status_code=404, detail="Recipe not found")
-    entry = entries[index]
-    recipe_id = entry.get("id")
-    if not recipe_id:
-        raise HTTPException(status_code=400, detail="Recipe has no id")
     if "notes" in body:
         entry["notes"] = body["notes"]
     if "name" in body:
@@ -285,15 +270,11 @@ async def update_recipe(index: int, body: dict, user_id: str = Depends(_get_user
     return {"recipes": _entries_summary(entries)}
 
 
-@app.delete("/recipes/{index}")
-async def delete_recipe(index: int, user_id: str = Depends(_get_user_id)):
-    entries = storage.load_entries(user_id)
-    if index < 0 or index >= len(entries):
+@app.delete("/recipes/{recipe_id}")
+async def delete_recipe(recipe_id: str, user_id: str = Depends(_get_user_id)):
+    entry = storage.load_entry(user_id, recipe_id)
+    if not entry:
         raise HTTPException(status_code=404, detail="Recipe not found")
-    entry = entries[index]
-    recipe_id = entry.get("id")
-    if not recipe_id:
-        raise HTTPException(status_code=400, detail="Recipe has no id")
     storage.delete_entry(user_id, recipe_id)
     entries = storage.load_entries(user_id)
     return {"recipes": _entries_summary(entries)}

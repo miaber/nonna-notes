@@ -49,8 +49,19 @@ def _fetch_youtube_transcript_sync(video_id: str) -> str:
         except ImportError:
             pass
 
-    api = YouTubeTranscriptApi(proxy_config=proxy_config) if proxy_config else YouTubeTranscriptApi()
-    fetched = api.fetch(video_id)
+    # If no explicit proxy is configured but system proxy env vars exist,
+    # temporarily clear them so the library connects directly to YouTube.
+    _saved_env = {}
+    if not proxy_config:
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+            if var in os.environ:
+                _saved_env[var] = os.environ.pop(var)
+
+    try:
+        api = YouTubeTranscriptApi(proxy_config=proxy_config) if proxy_config else YouTubeTranscriptApi()
+        fetched = api.fetch(video_id)
+    finally:
+        os.environ.update(_saved_env)
     raw = fetched.to_raw_data() if hasattr(fetched, "to_raw_data") else list(fetched)
     parts = [entry["text"].strip() for entry in raw if entry.get("text")]
     return "\n".join(parts) if parts else ""
@@ -104,15 +115,112 @@ async def _youtube_description(video_id: str) -> tuple[str, str]:
         return ("", "")
 
 
+def _extract_content_images(soup: BeautifulSoup) -> list[dict]:
+    """Extract images from the blog post body with surrounding context.
+
+    Returns list of {"url": str, "alt": str, "context": str} dicts.
+    `context` is the text from the nearest preceding <p> sibling, which usually
+    describes the action shown in the photo (e.g. "Fold the chips into the
+    dough."). This is far more useful for step matching than alt text alone.
+    """
+    content = soup.find("div", class_="entry-content") or soup.find("article") or soup.find("main")
+    if not content:
+        return []
+
+    recipe_card = content.find(class_=lambda c: c and any(
+        kw in str(c) for kw in ("wprm-recipe-container", "tasty-recipes", "easyrecipe", "recipe-card")
+    ))
+
+    def _preceding_text(img_tag) -> str:
+        """Walk backwards from the image to find the nearest preceding paragraph."""
+        # Walk up to the direct child of the content container so we get past
+        # any nesting like <div class="wp-block-image"><figure><img></figure></div>
+        anchor = img_tag
+        for parent in img_tag.parents:
+            if parent == content:
+                break
+            anchor = parent
+        # Walk previous siblings of the anchor looking for a <p> with text
+        for sib in anchor.previous_siblings:
+            if getattr(sib, "name", None) == "p":
+                txt = sib.get_text(" ", strip=True)
+                if len(txt) > 15:
+                    return txt
+            if getattr(sib, "name", None) in ("figure", "img"):
+                break
+        return ""
+
+    seen = set()
+    results = []
+    for img in content.find_all("img"):
+        if recipe_card and recipe_card in img.parents:
+            continue
+        src = img.get("data-lazy-src") or img.get("data-src") or img.get("src", "")
+        if not src or "data:image" in src or "pixel" in src or len(src) < 20:
+            continue
+        try:
+            if int(img.get("width", 999)) < 100:
+                continue
+        except (ValueError, TypeError):
+            pass
+        if src in seen:
+            continue
+        seen.add(src)
+        alt = (img.get("alt") or "").strip()
+        ctx = _preceding_text(img)
+        results.append({"url": src, "alt": alt, "context": ctx})
+    return results
 
 
-def _extract_json_ld_recipe(soup: BeautifulSoup) -> str | None:
+def _extract_recipe_images(soup: BeautifulSoup) -> list[str]:
+    """Extract hero/featured images from a recipe page via JSON-LD or Open Graph."""
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = data if isinstance(data, list) else [data]
+        expanded = []
+        for item in items:
+            if isinstance(item, dict) and "@graph" in item:
+                expanded.extend(item["@graph"])
+            else:
+                expanded.append(item)
+        for item in expanded:
+            if not isinstance(item, dict):
+                continue
+            schema_type = item.get("@type", "")
+            types = schema_type if isinstance(schema_type, list) else [schema_type]
+            if "Recipe" not in types:
+                continue
+            img = item.get("image")
+            if not img:
+                continue
+            urls = []
+            if isinstance(img, str):
+                urls.append(img)
+            elif isinstance(img, list):
+                for entry in img[:4]:
+                    if isinstance(entry, str):
+                        urls.append(entry)
+                    elif isinstance(entry, dict) and entry.get("url"):
+                        urls.append(entry["url"])
+            elif isinstance(img, dict) and img.get("url"):
+                urls.append(img["url"])
+            if urls:
+                return urls[:3]
+
+    og = soup.find("meta", attrs={"property": "og:image"})
+    if og and og.get("content"):
+        return [og["content"]]
+    return []
+
+
+def _extract_json_ld_recipe(soup: BeautifulSoup) -> tuple[str | None, dict[int, str]]:
     """Try to pull structured recipe data from JSON-LD (schema.org).
 
-    Almost every recipe site embeds this.  It gives us *just* the recipe
-    (name, ingredients, instructions, 
-    times) in a few hundred chars instead
-    of 6 000 chars of page junk.
+    Returns (recipe_text, step_images) where step_images maps 1-based step
+    index to an image URL extracted from HowToStep entries.
     """
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -120,10 +228,8 @@ def _extract_json_ld_recipe(soup: BeautifulSoup) -> str | None:
         except (json.JSONDecodeError, TypeError):
             continue
 
-        # The JSON-LD can be a single object or a list
         items = data if isinstance(data, list) else [data]
 
-        # It might be nested inside a @graph
         expanded = []
         for item in items:
             if "@graph" in item:
@@ -135,18 +241,16 @@ def _extract_json_ld_recipe(soup: BeautifulSoup) -> str | None:
             if not isinstance(item, dict):
                 continue
             schema_type = item.get("@type", "")
-            # @type can be a string or a list
             types = schema_type if isinstance(schema_type, list) else [schema_type]
             if "Recipe" not in types:
                 continue
 
-            # ── Found a Recipe object — format it cleanly ──────────────
             parts = []
+            step_images: dict[int, str] = {}
             name = item.get("name", "")
             if name:
                 parts.append(f"# {name}\n")
 
-            # Ingredients
             ingredients = item.get("recipeIngredient", [])
             if ingredients:
                 parts.append("Ingredients:")
@@ -154,20 +258,38 @@ def _extract_json_ld_recipe(soup: BeautifulSoup) -> str | None:
                     parts.append(f"- {ing}")
                 parts.append("")
 
-            # Instructions
             instructions = item.get("recipeInstructions", [])
             if instructions:
                 parts.append("Instructions:")
-                for i, step in enumerate(instructions, 1):
-                    if isinstance(step, dict):
-                        text = step.get("text", "")
+                step_idx = 0
+                for entry in instructions:
+                    if isinstance(entry, dict):
+                        entry_type = entry.get("@type", "")
+                        # HowToSection contains a list of HowToSteps
+                        if entry_type == "HowToSection":
+                            for sub in entry.get("itemListElement", []):
+                                step_idx += 1
+                                text = sub.get("text", "") if isinstance(sub, dict) else str(sub)
+                                if text:
+                                    parts.append(f"{step_idx}. {text}")
+                                img_url = _step_image_url(sub) if isinstance(sub, dict) else None
+                                if img_url:
+                                    step_images[step_idx] = img_url
+                        else:
+                            step_idx += 1
+                            text = entry.get("text", "")
+                            if text:
+                                parts.append(f"{step_idx}. {text}")
+                            img_url = _step_image_url(entry)
+                            if img_url:
+                                step_images[step_idx] = img_url
                     else:
-                        text = str(step)
-                    if text:
-                        parts.append(f"{i}. {text}")
+                        step_idx += 1
+                        text = str(entry)
+                        if text:
+                            parts.append(f"{step_idx}. {text}")
                 parts.append("")
 
-            # Useful metadata
             for key, label in [
                 ("prepTime", "Prep time"),
                 ("cookTime", "Cook time"),
@@ -176,15 +298,31 @@ def _extract_json_ld_recipe(soup: BeautifulSoup) -> str | None:
             ]:
                 val = item.get(key)
                 if val:
-                    # ISO 8601 durations like PT30M → "30M"
                     if isinstance(val, str) and val.startswith("PT"):
                         val = val[2:]
                     parts.append(f"{label}: {val}")
 
             result = "\n".join(parts)
             if result.strip():
-                return result
+                if step_images:
+                    print(f"[recipe-agent] found {len(step_images)} step image(s) in JSON-LD", flush=True)
+                return result, step_images
 
+    return None, {}
+
+
+def _step_image_url(step_dict: dict) -> str | None:
+    """Extract the first image URL from a HowToStep JSON-LD entry."""
+    img = step_dict.get("image")
+    if not img:
+        return None
+    if isinstance(img, str):
+        return img
+    if isinstance(img, list) and img:
+        first = img[0]
+        return first if isinstance(first, str) else first.get("url") if isinstance(first, dict) else None
+    if isinstance(img, dict):
+        return img.get("url")
     return None
 
 
@@ -218,14 +356,15 @@ def _extract_plain_text(soup: BeautifulSoup) -> str:
     return "\n".join(lines)[:MAX_CHARS]
 
 
-async def fetch_recipe(url: str) -> str:
-    """Fetch a recipe URL and return clean recipe text.
+async def fetch_recipe(url: str) -> tuple[str, list[str], dict[int, str], list[dict]]:
+    """Fetch a recipe URL and return (clean_text, hero_images, step_images, content_images).
 
-    For YouTube URLs: fetches transcript (and optionally title/description via
-    YOUTUBE_API_KEY). For other URLs: tries JSON-LD first, then plain-text extraction.
+    step_images: dict mapping 1-based step index to image URL (from JSON-LD HowToStep).
+    content_images: list of {"url", "alt"} dicts from the blog post body (for fuzzy step matching).
     """
     video_id = _youtube_video_id(url)
     if video_id:
+        images = [f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"]
         title, description = await _youtube_description(video_id)
         transcript = None
         dev_api_key = os.getenv("YOUTUBE_TRANSCRIPT_DEV_API_KEY", "").strip()
@@ -237,7 +376,8 @@ async def fetch_recipe(url: str) -> str:
             except Exception as e:
                 if description:
                     note = "Recipe from video description (no captions available)."
-                    return f"{note}\n\n# {title}\n\n{description}" if title else f"{note}\n\n{description}"
+                    text = f"{note}\n\n# {title}\n\n{description}" if title else f"{note}\n\n{description}"
+                    return text, images, {}, []
                 raise ValueError(f"No transcript or description available for this video: {e}") from e
 
         parts = []
@@ -249,7 +389,7 @@ async def fetch_recipe(url: str) -> str:
             parts.append("")
         parts.append("## Transcript\n")
         parts.append(transcript)
-        return "\n".join(parts)
+        return "\n".join(parts), images, {}, []
 
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
     async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
@@ -264,14 +404,14 @@ async def fetch_recipe(url: str) -> str:
                 raise
 
     soup = BeautifulSoup(response.text, "html.parser")
+    images = _extract_recipe_images(soup)
+    content_images = _extract_content_images(soup)
 
-    # Prefer structured data — typically ~500-1500 chars of pure recipe info
-    structured = _extract_json_ld_recipe(soup)
+    structured, step_images = _extract_json_ld_recipe(soup)
     if structured:
-        return structured
+        return structured, images, step_images, content_images
 
-    # Fallback to noisy full-page text
-    return _extract_plain_text(soup)
+    return _extract_plain_text(soup), images, {}, content_images
 
 
 def is_url(value: str) -> bool:

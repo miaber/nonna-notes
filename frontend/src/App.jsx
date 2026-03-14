@@ -14,12 +14,10 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 export default function App() {
   const { user, signInWithGoogle, logout, getToken } = useAuth();
 
-  // Still loading auth state
   if (user === undefined) {
     return <div className="auth-loading">Loading…</div>;
   }
 
-  // Not signed in and Firebase is configured — show sign-in screen
   if (user === null && getToken === null && !!import.meta.env.VITE_FIREBASE_API_KEY) {
     return (
       <div className="auth-screen">
@@ -32,10 +30,12 @@ export default function App() {
     );
   }
   const videoRef = useRef(null);
+  const cameraColRef = useRef(null);
+  const convoRef = useRef(null);
   const recipeInputRef = useRef(null);
   const [recipe, setRecipe] = useState("");
   const [recipeFromLibrary, setRecipeFromLibrary] = useState(null);
-  const [libraryIndex, setLibraryIndex] = useState(null); // index in saved_recipes for persistence
+  const [libraryRecipeId, setLibraryRecipeId] = useState(null);
   const [persona, setPersona] = useState("nonna");
   const [showLibrary, setShowLibrary] = useState(false);
   const [toast, setToast] = useState(null);
@@ -84,6 +84,8 @@ export default function App() {
     isSpeaking,
     isReconnecting,
     musicVolume,
+    capturedPhotos,
+    setCapturedPhotos,
     stopMusic,
   } = useGeminiLive();
 
@@ -94,9 +96,9 @@ export default function App() {
 
   const handleRecipeEdit = async (updated) => {
     updateRecipe(updated);
-    if (libraryIndex !== null) {
+    if (libraryRecipeId !== null) {
       const token = getToken ? await getToken() : null;
-      fetch(`${BACKEND_URL}/recipes/${libraryIndex}`, {
+      fetch(`${BACKEND_URL}/recipes/${encodeURIComponent(libraryRecipeId)}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -106,6 +108,19 @@ export default function App() {
       }).catch(() => {});
     }
   };
+
+  const isCooking = status !== "idle";
+
+  useEffect(() => {
+    const cam = cameraColRef.current;
+    const conv = convoRef.current;
+    if (!cam || !conv) return;
+    const ro = new ResizeObserver(() => {
+      conv.style.maxHeight = `${cam.offsetHeight}px`;
+    });
+    ro.observe(cam);
+    return () => ro.disconnect();
+  }, [isCooking]);
 
   const displayRecipe = structuredRecipe ||
     (liveSteps.length > 0 || ingredients.length > 0
@@ -123,6 +138,24 @@ export default function App() {
           tips: [],
         }
       : null);
+
+  const currentStep = (() => {
+    if (!isCooking) return null;
+    if (displayRecipe?.steps?.length) {
+      const cs = structuredRecipe ? completedSteps : new Set(liveSteps.map((_, i) => i + 1));
+      for (let i = 0; i < displayRecipe.steps.length; i++) {
+        const step = displayRecipe.steps[i];
+        if (!cs?.has(step.id)) {
+          return displayRecipe.steps.slice(0, i).every((s) => cs?.has(s.id)) ? step : null;
+        }
+      }
+      return null;
+    }
+    for (let i = 0; i < recipeSteps.length; i++) {
+      if (!completedSteps.has(i + 1)) return { instruction: recipeSteps[i], id: i + 1 };
+    }
+    return null;
+  })();
 
   return (
     <div className="app">
@@ -143,14 +176,17 @@ export default function App() {
         </div>
       </header>
 
-      <main className="main">
-        {/* ── Ingredients column (left) ── */}
-        <div className="main-ingredients">
-          <IngredientsPanel ingredients={displayRecipe?.ingredients || ingredients} />
-        </div>
+      <main className={`main ${isCooking ? "main-cooking" : ""}`}>
+        {isCooking && (
+          <div className="main-widgets">
+            <TimerPanel timers={timers} onStart={startTimer} onDismiss={dismissTimer} />
+            {currentMusic && (
+              <MusicPlayer query={currentMusic.query} videoId={currentMusic.videoId} volume={musicVolume} isSpeaking={isSpeaking} onStop={stopMusic} />
+            )}
+          </div>
+        )}
 
-        {/* ── Center column ── */}
-        <div className="main-left">
+        <div className="main-camera" ref={cameraColRef}>
           <div className="camera-container">
             <video ref={videoRef} autoPlay muted playsInline className="camera-feed" />
             {isReconnecting && (
@@ -196,41 +232,69 @@ export default function App() {
             <div className={`status-dot ${status}`} title={status} />
           </div>
 
-          <TimerPanel timers={timers} onStart={startTimer} onDismiss={dismissTimer} />
-
-          {displayRecipe ? (
-            <RecipePanel
-              recipe={displayRecipe}
-              completedSteps={structuredRecipe ? completedSteps : new Set(liveSteps.map((_, i) => i + 1))}
-              editable={!!structuredRecipe}
-              onChange={handleRecipeEdit}
-              hideIngredients={true}
-            />
-          ) : (
-            <RecipeSteps steps={recipeSteps} completedSteps={completedSteps} />
-          )}
-
-          {status === "connected" && (
-            <button className="stop-btn" onClick={() => { stopSession(); if (recipeInputRef.current) recipeInputRef.current.value = ""; setRecipe(""); setRecipeFromLibrary(null); setLibraryIndex(null); }}>
-              End Session
-            </button>
-          )}
-        </div>
-
-        {/* ── Right column: transcript ── */}
-        <div className="main-right">
-          {transcript.length > 0 && <p className="transcript-label">Conversation</p>}
-          <div className="transcript">
-            {[...transcript].reverse().map((msg, i) => {
-              const origIndex = transcript.length - 1 - i;
-              return (
-                <div key={origIndex} className={`msg ${msg.role}`}>
-                  {msg.text}
+          {currentStep && (
+            <div className="current-step-callout">
+              <div className="current-step-content">
+                <span className="current-step-label">Now</span>
+                <span className="current-step-text">{currentStep.instruction}</span>
+              </div>
+              {(currentStep.image || capturedPhotos[currentStep.id]?.length > 0) && (
+                <div className="current-step-images">
+                  {currentStep.image && (
+                    <img src={currentStep.image} alt="" className="current-step-img" loading="lazy" />
+                  )}
+                  {(capturedPhotos[currentStep.id] || []).map((src, i) => (
+                    <img key={`cap-${i}`} src={src} alt="" className="current-step-img nonna-photo" loading="lazy" />
+                  ))}
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </div>
+          )}
         </div>
+
+        {isCooking && (
+          <div className="main-conversation" ref={convoRef}>
+            {transcript.length > 0 && <p className="transcript-label">Conversation</p>}
+            <div className="transcript">
+              {[...transcript].reverse().map((msg, i) => {
+                const origIndex = transcript.length - 1 - i;
+                return (
+                  <div key={origIndex} className={`msg ${msg.role}`}>
+                    {msg.text}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {isCooking && (
+          <div className="main-ingredients">
+            <IngredientsPanel ingredients={displayRecipe?.ingredients || ingredients} />
+          </div>
+        )}
+
+        {isCooking && (
+          <div className="main-recipe">
+            {displayRecipe ? (
+              <RecipePanel
+                recipe={displayRecipe}
+                completedSteps={structuredRecipe ? completedSteps : new Set(liveSteps.map((_, i) => i + 1))}
+                editable={!!structuredRecipe}
+                onChange={handleRecipeEdit}
+                hideIngredients={true}
+                capturedPhotos={capturedPhotos}
+              />
+            ) : (
+              <RecipeSteps steps={recipeSteps} completedSteps={completedSteps} />
+            )}
+            {status === "connected" && (
+              <button className="stop-btn" onClick={() => { stopSession(); if (recipeInputRef.current) recipeInputRef.current.value = ""; setRecipe(""); setRecipeFromLibrary(null); setLibraryRecipeId(null); }}>
+                End Session
+              </button>
+            )}
+          </div>
+        )}
       </main>
 
       {toast && (
@@ -239,20 +303,28 @@ export default function App() {
         </div>
       )}
 
-      {currentMusic && (
-        <MusicPlayer query={currentMusic.query} videoId={currentMusic.videoId} volume={musicVolume} isSpeaking={isSpeaking} onStop={stopMusic} />
-      )}
-
       {showLibrary && (
         <RecipeLibrary
           getToken={getToken}
           onClose={() => setShowLibrary(false)}
-          onCook={(name, recipeObj, source, index) => {
+          onCook={(name, recipeObj, source, recipeId, prevPhotos) => {
             const libRecipe = recipeObj ? { recipe: recipeObj, source: source ?? "saved" } : null;
             setRecipe(name);
             setRecipeFromLibrary(libRecipe);
-            setLibraryIndex(index ?? null);
+            setLibraryRecipeId(recipeId ?? null);
             setShowLibrary(false);
+            if (prevPhotos?.length) {
+              const grouped = {};
+              for (const p of prevPhotos) {
+                if (p.step_id != null && p.data) {
+                  const src = p.data.startsWith("data:") ? p.data : `data:image/jpeg;base64,${p.data}`;
+                  (grouped[p.step_id] ??= []).push(src);
+                }
+              }
+              setCapturedPhotos(grouped);
+            } else {
+              setCapturedPhotos({});
+            }
             startSession(videoRef.current, name, persona, libRecipe, false, null, getToken);
           }}
           onContinueDraft={(startedAt) => {

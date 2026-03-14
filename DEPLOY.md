@@ -25,7 +25,7 @@ firebase login
 
 ---
 
-## 1 — GCP project setup (one-time)
+## 1 - GCP project setup (one-time)
 
 ```bash
 PROJECT=your-gcp-project-id   # set this once; reuse below
@@ -42,17 +42,17 @@ gsutil mb -l us-central1 gs://${PROJECT}-recipes
 
 # Create a long-lived access token (any random string)
 ACCESS_TOKEN=$(openssl rand -hex 32)
-echo "ACCESS_TOKEN: $ACCESS_TOKEN"   # save this — you'll need it for the frontend too
+echo "ACCESS_TOKEN: $ACCESS_TOKEN"   # save this - you'll need it for the frontend too
 ```
 
 ---
 
-## 2 — Deploy `recipe-agent`
+## 2 - Deploy `recipe-agent`
 
 ```bash
 cd recipe-agent
 
-gcloud run deploy recipe-agent \
+gcloud run deploy mise-recipe-agent \
   --source . \
   --region us-central1 \
   --platform managed \
@@ -67,13 +67,13 @@ RECIPE_AGENT_URL=https://recipe-agent-abc123-uc.a.run.app
 ```
 
 **Optional env vars for recipe-agent:**
-- `YOUTUBE_API_KEY` — include video title and description when parsing YouTube URLs (same key as backend music search).
+- `YOUTUBE_API_KEY` - include video title and description when parsing YouTube URLs (same key as backend music search).
 - **Recipe parse cache:** Set `FIREBASE_STORAGE_BUCKET` (same as backend, e.g. `your-project.appspot.com`) so the recipe-agent persists URL → parsed recipe in Firebase Storage (`cache/{key}.json`). Shared across instances and survives restarts. Without it, cache is in-memory only (per instance, lost on restart). Optional: `RECIPE_AGENT_CACHE_TTL_SEC` (default 86400 = 24h), `RECIPE_AGENT_CACHE_MAX` (default 200, in-memory fallback only).
 - **YouTube transcript on Cloud Run:** YouTube blocks cloud IPs. To get transcripts from Cloud Run you can either use a **free transcript API** (recommended) or a **proxy** (see below). Without either, description-only fallback works if `YOUTUBE_API_KEY` is set.
 
 ### Getting YouTube transcripts from Cloud Run (no proxy required)
 
-**Option 1 — youtubetranscript.dev (free tier, no proxy)**
+**Option 1 - youtubetranscript.dev (free tier, no proxy)**
 
 1. Sign up at [youtubetranscript.dev](https://www.youtubetranscript.dev/) (no credit card for free tier).
 2. In the [dashboard](https://www.youtubetranscript.dev/dashboard/account) create or copy an API token.
@@ -87,7 +87,7 @@ RECIPE_AGENT_URL=https://recipe-agent-abc123-uc.a.run.app
 
 If you prefer not to use the transcript API, you can use a proxy so the Python library’s requests come from a non-cloud IP. Two ways:
 
-**Option A — Webshare (rotating residential, paid)**
+**Option A - Webshare (rotating residential, paid)**
 
 1. Sign up at [Webshare](https://www.webshare.io/).
 2. Buy a **“Residential”** proxy package (not “Proxy Server” or “Static Residential”). Pick a size that fits your traffic.
@@ -99,7 +99,7 @@ If you prefer not to use the transcript API, you can use a proxy so the Python l
    ```
    Or in Cloud Console: recipe-agent → Edit & deploy new revision → Variables → add the two variables (mark Password as “Secret” if you want).
 
-**Option B — Any HTTP proxy (generic)**
+**Option B - Any HTTP proxy (generic)**
 
 If you have another proxy provider (Bright Data, Oxylabs, a VPS with Squid, etc.), they’ll give you a URL like:
 
@@ -121,9 +121,9 @@ Use the same URL for both HTTP and HTTPS; the app uses it for YouTube’s HTTPS 
 
 ---
 
-## 3 — Deploy `backend`
+## 3 - Deploy `backend`
 
-WebSocket sessions can be long-running — set timeout to 1 hour.
+WebSocket sessions can be long-running - set timeout to 1 hour.
 
 ```bash
 cd backend
@@ -143,7 +143,7 @@ gcloud run deploy mise-backend \
 BACKEND_URL=https://mise-backend-abc123-uc.a.run.app
 ```
 
-> **Recipe persistence:** Set `FIREBASE_STORAGE_BUCKET` to your Firebase Storage bucket (e.g. `your-project-id.appspot.com`, same as `VITE_FIREBASE_STORAGE_BUCKET` in the frontend). Without it, saved recipes are written to the container’s local disk and are lost when the instance scales down or another instance handles the request — so “My Recipes” will stay empty after saving.
+> **Recipe persistence:** Set `FIREBASE_STORAGE_BUCKET` to your Firebase Storage bucket (e.g. `your-project-id.appspot.com`, same as `VITE_FIREBASE_STORAGE_BUCKET` in the frontend). Without it, saved recipes are written to the container’s local disk and are lost when the instance scales down or another instance handles the request - so “My Recipes” will stay empty after saving.
 
 > **GCS permissions**: Cloud Run uses the Compute Engine default service account.
 > Grant it Storage Object Admin on the bucket:
@@ -154,16 +154,16 @@ BACKEND_URL=https://mise-backend-abc123-uc.a.run.app
 
 ---
 
-## 4 — Firebase console setup (one-time)
+## 4 - Firebase console setup (one-time)
 
 1. Go to [console.firebase.google.com](https://console.firebase.google.com) → select your GCP project
 2. **Authentication → Get started → Sign-in method → Google → Enable → Save**
-3. In **Authentication → Settings → Authorized domains** add your Firebase Hosting domain (e.g. `your-project.web.app`) — it's usually already there
+3. In **Authentication → Settings → Authorized domains** add your Firebase Hosting domain (e.g. `your-project.web.app`) - it's usually already there
 4. Go to **Project settings → Your apps → Add app (web icon `</>`)** → get the `firebaseConfig` object
 
 ---
 
-## 5 — Build & deploy frontend
+## 5 - Build & deploy frontend
 
 ```bash
 cd frontend
@@ -198,7 +198,7 @@ gcloud run services update mise-backend \
 
 ---
 
-## 6 — Verify
+## 6 - Verify
 
 ```bash
 # Health checks
@@ -218,7 +218,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" https://mise-backend-abc123-uc.a.r
 cd backend && gcloud run deploy mise-backend --source . --region us-central1
 
 # Recipe agent only
-cd recipe-agent && gcloud run deploy recipe-agent --source . --region us-central1
+cd recipe-agent && gcloud run deploy mise-recipe-agent --source . --region us-central1
 
 # Frontend only
 cd frontend && npm run build && firebase deploy --only hosting
@@ -239,4 +239,4 @@ cd recipe-agent && uvicorn main:app --port 8001 --reload
 cd frontend && npm run dev
 ```
 
-No `ACCESS_TOKEN` or `GCS_BUCKET` needed locally — both default to disabled.
+No `ACCESS_TOKEN` or `GCS_BUCKET` needed locally - both default to disabled.

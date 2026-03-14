@@ -27,6 +27,7 @@ export function useGeminiLive() {
   const [isSpeaking, setIsSpeaking] = useState(false);   // true while Gemini audio is playing
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [musicVolume, setMusicVolume] = useState(35);     // 0-100, user/AI-controlled baseline
+  const [capturedPhotos, setCapturedPhotos] = useState({}); // { [stepNumber]: ["data:image/jpeg;base64,...", ...] }
   const speakingRef = useRef(false);
   // Set to true when turn_complete arrives but audio is still playing.
   // The last buffer's "ended" callback reads this to clear isSpeaking.
@@ -101,7 +102,6 @@ export function useGeminiLive() {
     setStructuredRecipe(null);
     setLiveSteps([]);
 
-    // Normalize URLs missing protocol (e.g. "youtube.com/..." → "https://youtube.com/...")
     const looksLikeUrl = /^(https?:\/\/|[\w-]+\.(com|org|net|io|co|me|app|dev)\b)/i.test(recipe.trim());
     if (looksLikeUrl && !/^https?:\/\//i.test(recipe.trim())) {
       recipe = "https://" + recipe.trim();
@@ -122,15 +122,11 @@ export function useGeminiLive() {
           const data = await resp.json();
           if (data && data.recipe) recipeData = data;
         }
-      } catch (e) {
-        console.warn("[nonna] recipe agent unavailable, falling back to raw text", e);
-      }
+      } catch {}
     }
 
     setStatus("connecting");
 
-    // Open WebSocket and request media in parallel — they're independent.
-    // AudioWorklet module is pre-loaded on mount so addModule resolves from cache.
     const wsUrl = await _buildWsUrl(getToken);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -149,23 +145,13 @@ export function useGeminiLive() {
     });
 
     streamRef.current = stream;
-    // Don't show camera until actually connected — videoElement.srcObject set below after ws open
 
-    // Live API requires 16 kHz PCM. Chrome honours this AudioContext sample rate
-    // and resamples mic input internally, so no manual resampling is needed.
     const audioContext = new AudioContext({ sampleRate: 16000 });
     audioContextRef.current = audioContext;
     const actualSampleRate = audioContext.sampleRate;
-    if (actualSampleRate !== 16000) {
-      console.warn("[mise] AudioContext running at", actualSampleRate, "Hz — audio will be resampled to 16 kHz before sending.");
-    }
 
     const micSource = audioContext.createMediaStreamSource(stream);
 
-    // AudioWorklet runs off the main thread: more reliable than the deprecated
-    // ScriptProcessorNode, especially across different mic hardware.
-    // 512 samples @ 16 kHz ≈ 32 ms — good latency for Live API.
-    // addModule resolves instantly from the cache pre-loaded on mount.
     await Promise.all([
       audioContext.audioWorklet.addModule("/audio-processor.js"),
       wsOpenPromise,
@@ -177,8 +163,6 @@ export function useGeminiLive() {
     micSource.connect(workletNode);
     workletNodeRef.current = workletNode;
 
-    // WebSocket is already open (awaited above)
-    // Don't mark "connected" or show camera until first audio chunk from Gemini arrives.
     {
       ws.send(JSON.stringify({
         type: "config",
@@ -193,15 +177,12 @@ export function useGeminiLive() {
 
       workletNode.port.onmessage = (event) => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        // Float32Array, 512 samples @ 16 kHz (transferred zero-copy from AudioWorklet thread)
         const float32 = event.data;
-        // Resample only if AudioContext couldn't honour 16 kHz (rare in Chrome)
         const toSend = actualSampleRate === 16000 ? float32 : resampleTo16k(float32, actualSampleRate);
         const int16 = float32ToInt16(toSend);
         ws.send(JSON.stringify({ type: "audio", data: arrayBufferToBase64(int16.buffer) }));
       };
 
-      // Cross-browser frame capture via hidden <video> element (ImageCapture only works in Chrome)
       const videoEl = document.createElement("video");
       videoEl.srcObject = stream;
       videoEl.muted = true;
@@ -213,7 +194,6 @@ export function useGeminiLive() {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (videoEl.readyState < videoEl.HAVE_CURRENT_DATA) return;
         try {
-          // Send at half resolution — reduces data ~4x with negligible quality loss for cooking guidance
           canvas.width = Math.round(videoEl.videoWidth / 2);
           canvas.height = Math.round(videoEl.videoHeight / 2);
           ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
@@ -285,10 +265,13 @@ export function useGeminiLive() {
         setRecipeSearchStatus(data.error ? { error: data.error } : { error: "Could not load recipe" });
       } else if (data.type === "recipe") {
         setRecipeSearchStatus(null);
-        setStructuredRecipe(data.recipe);
-        // Seed flat arrays too so existing RecipeSteps still work
-        setRecipeSteps((data.recipe.steps || []).map((s) => s.instruction));
-        setIngredients(data.recipe.ingredients || []);
+        const normalized = { ...data.recipe };
+        if (Array.isArray(normalized.steps)) {
+          normalized.steps = normalized.steps.map((s, i) => ({ ...s, id: i + 1 }));
+        }
+        setStructuredRecipe(normalized);
+        setRecipeSteps((normalized.steps || []).map((s) => s.instruction));
+        setIngredients(normalized.ingredients || []);
       } else if (data.type === "live_step") {
         const startedAt = stopwatchStartedAtRef.current;
         if (startedAt != null) {
@@ -360,7 +343,13 @@ export function useGeminiLive() {
           return { ...prev, steps };
         });
       } else if (data.type === "photo_captured") {
-        setTranscript((prev) => [...prev, { role: "assistant", text: "Photo saved. It’ll be included when you save this recipe to My Recipes.", complete: true }]);
+        if (data.data && data.step_number != null) {
+          const src = data.data.startsWith("data:") ? data.data : `data:image/jpeg;base64,${data.data}`;
+          setCapturedPhotos((prev) => ({
+            ...prev,
+            [data.step_number]: [...(prev[data.step_number] || []), src],
+          }));
+        }
       } else if (data.type === "audio") {
         if (!videoShown) {
           videoShown = true;
@@ -374,10 +363,8 @@ export function useGeminiLive() {
         setTranscript((prev) => {
           const last = prev[prev.length - 1];
           if (last && last.role === "assistant" && !last.complete) {
-            // Append chunk to the current in-progress turn
             return [...prev.slice(0, -1), { ...last, text: last.text + data.text }];
           }
-          // Start a new assistant message
           return [...prev, { role: "assistant", text: data.text, complete: false }];
         });
       } else if (data.type === "turn_complete") {
@@ -389,11 +376,18 @@ export function useGeminiLive() {
         } else {
           turnCompleteRef.current = true;
         }
-        // Seal the last assistant message so the next turn starts fresh
         setTranscript((prev) => {
           const last = prev[prev.length - 1];
           if (last && last.role === "assistant" && !last.complete) {
             return [...prev.slice(0, -1), { ...last, complete: true }];
+          }
+          return prev;
+        });
+      } else if (data.type === "retract_transcript") {
+        setTranscript((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === "assistant" && !last.complete) {
+            return prev.slice(0, -1);
           }
           return prev;
         });
@@ -441,11 +435,9 @@ export function useGeminiLive() {
     } else if (name === "start_timer") {
       const labelLower = (args.label || "").toLowerCase();
       setTimers((prev) => {
-        // Find the best matching pending timer
         const idx = prev.findIndex(
           (t) => !t.startedAt && t.label.toLowerCase().includes(labelLower)
         );
-        // Fall back to most recent pending timer if no label match
         const fallbackIdx = idx === -1
           ? [...prev].reverse().findIndex((t) => !t.startedAt)
           : -1;
@@ -527,7 +519,6 @@ export function useGeminiLive() {
   // Single persistent AudioContext with scheduled start times for gapless playback.
 
   const enqueueAudio = useCallback((base64Data) => {
-    // Lazily create (or recreate after stopSession) the playback context
     if (!playbackContextRef.current || playbackContextRef.current.state === "closed") {
       playbackContextRef.current = new AudioContext({ sampleRate: 24000 });
       nextPlayTimeRef.current = 0;
@@ -544,11 +535,9 @@ export function useGeminiLive() {
     source.buffer = buffer;
     source.connect(ctx.destination);
 
-    // Schedule this chunk to start exactly when the previous one ends
     const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
     nextPlayTimeRef.current = startAt + buffer.duration;
 
-    // Track so we can stop(0) all nodes instantly on interruption
     activeSourcesRef.current.push(source);
     source.addEventListener("ended", () => {
       const i = activeSourcesRef.current.indexOf(source);
@@ -578,6 +567,8 @@ export function useGeminiLive() {
     isSpeaking,
     isReconnecting,
     musicVolume,
+    capturedPhotos,
+    setCapturedPhotos,
     startSession,
     stopSession,
     startTimer,

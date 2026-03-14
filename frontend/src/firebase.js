@@ -1,8 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
-// If VITE_FIREBASE_API_KEY is not set (local dev without Firebase), auth will be null
-// and the app will fall back to VITE_ACCESS_TOKEN simple-token mode.
 const _configured = !!import.meta.env.VITE_FIREBASE_API_KEY;
 
 export const auth = _configured

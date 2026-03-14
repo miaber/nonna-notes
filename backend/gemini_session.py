@@ -5,6 +5,7 @@ import os
 import time
 import warnings
 from datetime import datetime, timezone
+from pathlib import Path
 from dotenv import load_dotenv
 import httpx
 from google import genai
@@ -12,7 +13,7 @@ from google.genai import types
 from starlette.websockets import WebSocketDisconnect
 import storage
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 warnings.filterwarnings("ignore", message=".*non-data parts.*")
 
@@ -83,10 +84,10 @@ def _format_structured_recipe(r: dict) -> str:
         prep = f", {ing['prep']}" if ing.get("prep") else ""
         lines.append(f"  - {ing.get('amount', '')} {ing.get('item', '')}{prep}")
     lines += ["", "Steps:"]
-    for step in r.get("steps", []):
+    for i, step in enumerate(r.get("steps", []), 1):
         timer = f" [{step['timer_seconds']}s]" if step.get("timer_seconds") else ""
         visual = " [visual check]" if step.get("visual_checkpoint") else ""
-        lines.append(f"  {step['id']}. {step['instruction']}{timer}{visual}")
+        lines.append(f"  {i}. {step['instruction']}{timer}{visual}")
     if r.get("tips"):
         lines += ["", "Tips:"] + [f"  - {t}" for t in r["tips"]]
     return "\n".join(lines)
@@ -243,12 +244,12 @@ Keep responses SHORT — 1-2 sentences max. Never repeat yourself. Never say the
 TOOL CALLS ARE THE ONLY WAY ACTIONS HAPPEN. Never say you did something without calling the tool.
 Prompt the user often to show you what they're doing on the current step so you can take a picture and give feedback — e.g. "Show Nonna what you have there, tesoro!" or "Let me see! Hold it up so I can take a picture." Wait until the user responds or you have a good view of the dish before taking the photo — do not capture blindly. When you do take a picture, say so aloud first (e.g. "I'm taking a picture!", "Let me get a picture of that!"), then call capture_step_photo, then give brief feedback (e.g. "Bellissimo! I got it."). Do this at least once per step and more often on longer steps. Never tell the user to adjust the camera in a demanding way.
 If the user asks to play music, call play_music(query). Stop: stop_music(). Volume: set_music_volume(volume 0–100).
-You may suggest playing music once at the start of a session if none is playing. Once music is already playing, do NOT suggest more music or ask about changing it — only respond to music requests from the user.
+You may suggest playing music ONCE at the very start of a session (your first or second turn) if none is playing. After that, NEVER bring up music again — only respond if the user asks about music. Do not suggest music mid-recipe, between steps, or during cooking.
 
 PACING — THE SINGLE MOST IMPORTANT RULE:
 You are a PASSIVE assistant. You follow the user's lead. You do NOT drive the pace.
-When the user has spoken, you MUST acknowledge or answer briefly (one short sentence). Do not stay silent when they've just said something — give a quick "Got it.", "Alright, tesoro.", or a one-sentence answer, then stop. After that, wait for them to speak again.
-Never end your turn with no response when the user has just spoken — always say at least one short sentence (or call a tool if that's the right action). Silence is only when they have not spoken yet.
+ONE THING AT A TIME. Say one thing, then STOP. If you ask a question, STOP IMMEDIATELY after the question — do not add anything else. Wait for the user to answer before saying or doing anything more. NEVER combine a question with another statement, question, or request. Examples of what NOT to do: "Want me to set a timer? Show Nonna what you have!" (two things), "Step 7 is to mix the flour. Want me to set a timer? Let me take a picture!" (three things). Correct: "Want me to set a timer?" then silence.
+When the user has spoken, you MUST acknowledge or answer briefly (one short sentence), then stop. After that, wait for them to speak again.
 Your default state is WAITING. You only speak when the user speaks to you first.
 
 When following a recipe:
@@ -265,7 +266,8 @@ When following a recipe:
 SPEAKING STYLE:
 • Say it ONCE. Never repeat or rephrase what you just said.
 • CRITICAL: NEVER speak and call a tool in the same response. Tool calls must be SILENT — send the tool call with NO speech attached. After the tool result returns, THEN you may speak.
-• After calling a tool (complete_step, set_timer, etc.), do NOT narrate what the tool did. The user can see the UI update.
+• After calling complete_step or jump_to_step, do NOT narrate what the tool did — just read the next step.
+• After calling set_timer, give a brief confirmation (e.g. "Timer set!" or "5 minutes on the clock, tesoro!").
 • When transitioning to the next step, say ONLY the new step instruction. Do NOT say "great job on step 3, now moving to step 4 where we..." — just read step 4.
 
 CAMERA / VIDEO:
@@ -548,9 +550,9 @@ def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bo
             "\n"
             "\n2. **Step Loop (repeat for every step) — THIS IS THE CORE LOOP:**"
             "\n   a. Read the current step aloud. One brief tip max."
-            "\n   b. If the step has a time, ask: 'Want me to set a timer?' Then STOP."
+            "\n   b. If the step has a time, ask: 'Want me to set a timer?' Then STOP. Do NOT add anything else — no photo requests, no tips, no follow-up questions. Just the timer question, then silence."
             "\n   c. STOP TALKING. Wait in unmistakable silence. Do NOT say anything else."
-            "\n   d. The user will cook. Often prompt them to show you what they're doing so you can take a picture and give feedback — e.g. 'Show me what you have there!', 'Let Nonna see so I can take a picture!' Wait until they respond or you have a good view before capturing — do not take a photo right after asking. When you do capture, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'), then call capture_step_photo, then give one short sentence of feedback. Do this at least once per step; for longer steps, ask a few times at natural moments."
+            "\n   d. The user will cook. ONLY AFTER they respond to any pending question (e.g. timer), you may prompt them to show you what they're doing so you can take a picture — e.g. 'Show me what you have there!' Wait until they respond or you have a good view before capturing. When you do capture, say aloud that you're taking a picture, then call capture_step_photo, then give one short sentence of feedback."
             "\n   e. They may talk to you — answer briefly, then STOP again."
             "\n   f. Eventually the user will say 'done', 'next', 'next step', 'what's next', 'move on', or 'finished'."
             "\n   g. ONLY when you hear one of those exact words: call complete_step SILENTLY — do NOT say anything in the same breath as the tool call. Wait for the tool result."
@@ -705,8 +707,7 @@ class GeminiSession:
             ),
         )
 
-        # Retry on transient errors
-        CONNECT_TIMEOUT = 20  # seconds to wait for live.connect() before retrying
+        CONNECT_TIMEOUT = 20
         for attempt in range(5):
             try:
                 t0 = time.time()
@@ -723,9 +724,9 @@ class GeminiSession:
                     raise RuntimeError(f"live.connect() timed out after {CONNECT_TIMEOUT}s")
                 print(f"[nonna] connected ✓ ({time.time()-t0:.1f}s)", flush=True)
                 try:
-
-                    # Drain buffered browser frames
-                    while True:
+                    # Drain any messages queued while we were connecting (cap iterations to avoid getting stuck
+                    # when the browser is already streaming audio faster than the timeout).
+                    for _ in range(20):
                         try:
                             await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                         except asyncio.TimeoutError:
@@ -734,7 +735,6 @@ class GeminiSession:
                     is_reconnect = attempt > 0
 
                     if not is_reconnect:
-                        # Push structured recipe to frontend before Gemini speaks
                         recipe_json = config_msg.get("recipe_json") or self.current_recipe
                         recipe_source = config_msg.get("recipe_source") or "url"
                         if recipe_source == "saved":
@@ -746,7 +746,6 @@ class GeminiSession:
                                 "source": recipe_source,
                             }))
 
-                        # Resume document draft if requested
                         if config_msg.get("resume_draft"):
                             draft_started_at = config_msg.get("resume_draft_started_at")
                             draft_entry = _read_draft(started_at=draft_started_at, user_id=self.user_id)
@@ -767,7 +766,6 @@ class GeminiSession:
                                 }))
                                 print(f"[nonna] draft loaded: {len(self.live_steps)} steps, {len(self.live_ingredients)} ingredients, {len(self.step_photos)} photos", flush=True)
 
-                    # Kick off the conversation
                     if is_reconnect:
                         trigger = self._build_reconnect_context(recipe_text)
                         print(f"[nonna] reconnect trigger ({len(self._transcript_log)} transcript entries, {len(self._completed_step_ids)} completed steps)", flush=True)
@@ -791,12 +789,8 @@ class GeminiSession:
                         else:
                             trigger = "No recipe is loaded. Greet the user briefly and ask what they'd like to cook. Once they name a dish, ask whatever you need to know to find the right recipe — then call fetch_recipe. Never recite a recipe yourself."
                     await session.send_realtime_input(text=trigger)
-                    print(f"[nonna] trigger sent ✓", flush=True)
 
-                    # Counters for logging: confirm user audio is reaching the session and debug 0-audio turns
-                    self._audio_chunks_sent_to_session = 0
                     self._turns_completed = 0
-                    self._audio_chunks_since_last_turn = 0
 
                     recv_task = asyncio.create_task(self._receive_from_browser(websocket, session))
                     send_task = asyncio.create_task(self._send_to_browser(websocket, session))
@@ -857,8 +851,6 @@ class GeminiSession:
 
     async def _receive_from_browser(self, websocket, session):
         """Forward audio/video from browser → Gemini."""
-        audio_in_count = 0
-        video_in_count = 0
         try:
             async for message in websocket.iter_text():
                 data = json.loads(message)
@@ -869,20 +861,8 @@ class GeminiSession:
                         audio_bytes = base64.b64decode(data.get("data") or "")
                     except Exception:
                         continue
-                    # PCM 16kHz 16-bit mono = even number of bytes; skip empty or odd-sized to avoid 1007 invalid payload
+                    # PCM 16kHz 16-bit mono = even byte count; skip empty or odd-sized to avoid 1007
                     if audio_bytes and len(audio_bytes) % 2 == 0:
-                        audio_in_count += 1
-                        self._audio_chunks_sent_to_session = getattr(self, "_audio_chunks_sent_to_session", 0) + 1
-                        self._audio_chunks_since_last_turn = getattr(self, "_audio_chunks_since_last_turn", 0) + 1
-                        if audio_in_count == 1:
-                            print("[nonna] ← first audio from browser ✓ (forwarding to session)", flush=True)
-                        elif audio_in_count % 500 == 0:
-                            print(f"[nonna] ← audio from browser: {audio_in_count} chunks so far", flush=True)
-                        # Log first user audio in a new turn (after at least one turn_complete) so we know they're speaking
-                        if getattr(self, "_turns_completed", 0) > 0 and self._audio_chunks_since_last_turn == 1:
-                            print(f"[nonna] user speaking (first chunk of new turn #{self._turns_completed + 1} → session)", flush=True)
-                        if audio_in_count > 0 and audio_in_count % 200 == 0:
-                            print(f"[nonna] user audio → session: {self._audio_chunks_sent_to_session} total, {self._audio_chunks_since_last_turn} this turn", flush=True)
                         await session.send_realtime_input(
                             audio=types.Blob(data=audio_bytes, mime_type="audio/pcm;rate=16000")
                         )
@@ -891,17 +871,13 @@ class GeminiSession:
                         video_bytes = base64.b64decode(data.get("data") or "")
                     except Exception:
                         continue
-                    if not video_bytes or len(video_bytes) > 10 * 1024 * 1024:  # skip empty or >10MB
+                    if not video_bytes or len(video_bytes) > 10 * 1024 * 1024:
                         continue
-                    video_in_count += 1
-                    if video_in_count == 1:
-                        print("[nonna] ← first video from browser ✓", flush=True)
                     self.last_video_frame = data.get("data")
                     await session.send_realtime_input(
                         video=types.Blob(data=video_bytes, mime_type="image/jpeg")
                     )
                 elif t == "text":
-                    print(f"[nonna] ← text from browser: {data.get('text', '')[:80]}", flush=True)
                     await session.send_realtime_input(text=data.get("text", ""))
                 elif t == "stopwatch_elapsed":
                     sec = data.get("seconds")
@@ -910,7 +886,6 @@ class GeminiSession:
                         if last.get("timer_seconds") is None:
                             last["timer_seconds"] = int(sec)
                             self.active_stopwatch_label = None
-                            # If we already finalized, update current_recipe and re-push so total_time_minutes is set
                             if self.current_recipe and self.current_recipe.get("description") == "Documented live by Nonna while you cooked.":
                                 steps = self.current_recipe.get("steps", [])
                                 if steps and len(steps) == len(self.live_steps):
@@ -926,7 +901,7 @@ class GeminiSession:
                                     except Exception:
                                         pass
         except WebSocketDisconnect:
-            print(f"[nonna] browser disconnected (audio={audio_in_count}, video={video_in_count})", flush=True)
+            print("[nonna] browser disconnected", flush=True)
         except Exception as e:
             print(f"[nonna] receive error: {type(e).__name__}: {str(e)[:120]}", flush=True)
             if "1011" in str(e):
@@ -935,7 +910,6 @@ class GeminiSession:
     async def _send_to_browser(self, websocket, session):
         """Forward Gemini responses → browser."""
         audio_count = 0
-        response_count = 0
         seen_tool_calls: set[tuple] = set()  # dedup within a turn
         sent_transcription_this_turn = False  # True once output_transcription fired; suppresses model_turn text
         sent_text_this_turn: set[str] = set()  # dedup identical transcript chunks within a turn
@@ -943,9 +917,13 @@ class GeminiSession:
         pending_turn_complete = False  # True after turn_complete until we use sent_text_this_turn for tool_call or next turn
         transcript_buffer_this_turn: list[str] = []  # accumulate all chunks; send full text on turn_complete
         spoke_in_this_response = False  # True only if we saw transcript in this same response (not a previous turn)
+        # Post-step-tool speech budget: limits model to exactly 1 reading of
+        # the step after jump_to_step / complete_step, preventing multi-turn
+        # repeats regardless of how Gemini chains its responses.
+        _step_speech_budget: int | None = None  # None=unrestricted, 0+=turns of speech still allowed
+        _step_guard_expires: float = 0  # safety timeout: guard auto-clears after this timestamp
         while True:
           async for response in session.receive():
-            response_count += 1
             spoke_in_this_response = False  # New response: only suppress if speech and tool_call are in same response
             try:
                 sc = response.server_content
@@ -956,29 +934,27 @@ class GeminiSession:
                     await websocket.send_text(json.dumps({"type": "interrupted"}))
                     if suppress_until_turn_complete:
                         suppress_until_turn_complete = False
-                        print("[nonna] interrupt cleared suppress_until_turn_complete (turn was killed, no turn_complete incoming)", flush=True)
-                    else:
-                        print("[nonna] interrupt detected → client should stop playback", flush=True)
+                    _step_speech_budget = None
                     audio_count = 0
                     sent_transcription_this_turn = False
                     transcript_buffer_this_turn.clear()
 
+                # Auto-expire step guard
+                if _step_speech_budget is not None and time.time() > _step_guard_expires:
+                    _step_speech_budget = None
+
                 # Audio (skip if this response was an interrupt so client doesn't enqueue then immediately stop)
+                _budget_block = _step_speech_budget is not None and _step_speech_budget <= 0
                 if response.data and not interrupted:
-                    if suppress_until_turn_complete:
-                        if audio_count == 0:
-                            print("[nonna] ✂ suppressing post-tool audio", flush=True)
-                    else:
+                    if not suppress_until_turn_complete and not _budget_block:
                         audio_count += 1
-                        if audio_count == 1:
-                            print("[nonna] first audio chunk received ✓", flush=True)
                         await websocket.send_text(json.dumps({
                             "type": "audio",
                             "data": base64.b64encode(response.data).decode("utf-8"),
                         }))
 
                 # Audio transcription (preferred — native audio models)
-                if sc and sc.output_transcription and sc.output_transcription.text and not suppress_until_turn_complete:
+                if sc and sc.output_transcription and sc.output_transcription.text and not suppress_until_turn_complete and not _budget_block:
                     if pending_turn_complete:
                         sent_text_this_turn.clear()
                         pending_turn_complete = False
@@ -991,7 +967,7 @@ class GeminiSession:
                         await websocket.send_text(json.dumps({"type": "transcript", "text": txt}))
 
                 # Fallback: text from model_turn — skip if output_transcription already sent this text
-                if sc and sc.model_turn and not sent_transcription_this_turn and not suppress_until_turn_complete:
+                if sc and sc.model_turn and not sent_transcription_this_turn and not suppress_until_turn_complete and not _budget_block:
                     if pending_turn_complete:
                         sent_text_this_turn.clear()
                         pending_turn_complete = False
@@ -1008,8 +984,9 @@ class GeminiSession:
                 if sc and sc.turn_complete:
                     if suppress_until_turn_complete:
                         suppress_until_turn_complete = False
-                        print("[nonna] suppressed post-tool speech turn ✓", flush=True)
-                    # Log full turn for reconnect context; transcript was already streamed chunk-by-chunk to the UI
+                    # Decrement speech budget if this turn had speech
+                    if _step_speech_budget is not None and _step_speech_budget > 0 and transcript_buffer_this_turn:
+                        _step_speech_budget -= 1
                     if transcript_buffer_this_turn:
                         full_text = " ".join(transcript_buffer_this_turn).strip()
                         if full_text:
@@ -1017,19 +994,7 @@ class GeminiSession:
                             if len(self._transcript_log) > 40:
                                 self._transcript_log = self._transcript_log[-30:]
                     transcript_buffer_this_turn.clear()
-                    chunks_user_sent_this_turn = getattr(self, "_audio_chunks_since_last_turn", 0)
-                    self._audio_chunks_since_last_turn = 0
-                    self._turns_completed = getattr(self, "_turns_completed", 0) + 1
-                    total_sent = getattr(self, "_audio_chunks_sent_to_session", 0)
-                    if audio_count == 0:
-                        print(
-                            f"[nonna] turn complete (0 audio — model sent no speech) | user had sent {chunks_user_sent_this_turn} chunks this turn, {total_sent} total to session",
-                            flush=True,
-                        )
-                    else:
-                        print(f"[nonna] turn complete ({audio_count} audio, {response_count} total responses so far)", flush=True)
-                    if total_sent > 6000:
-                        print(f"[nonna] ⚠️  session age warning: {total_sent} chunks sent — consider reconnecting if Nonna becomes unresponsive", flush=True)
+                    self._turns_completed += 1
                     audio_count = 0
                     sent_transcription_this_turn = False
                     # Keep sent_text_this_turn until we process tool_call (same or next response); Vertex often streams turn_complete before tool_call.
@@ -1254,9 +1219,7 @@ class GeminiSession:
                             continue
 
                         elif fc.name == "save_recipe_to_library":
-                            print(f"[nonna] save_recipe_to_library called (current_recipe={bool(self.current_recipe)} live_steps={len(self.live_steps)} already_in_library={self._recipe_already_in_library})", flush=True)
                             if self._recipe_already_in_library:
-                                print("[nonna] save_recipe_to_library skipped (recipe loaded from library, already saved)", flush=True)
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
                                     response={"result": "already_saved", "message": "This recipe is already in the user's library — no need to save again."},
@@ -1279,10 +1242,17 @@ class GeminiSession:
                             if self.current_recipe:
                                 name = self.current_recipe.get("name", "Recipe")
                                 if self._saved_recipe_name_this_session != name:
-                                    _save_recipe_locally(self.current_recipe, photos=self.step_photos, user_id=self.user_id)
+                                    draft_id = str(self._draft_key or self.document_mode_started_at or "")
+                                    entry = {
+                                        "saved_at": datetime.now(timezone.utc).isoformat(),
+                                        "recipe": self.current_recipe,
+                                        "photos": self.step_photos or [],
+                                        "draft": False,
+                                    }
+                                    if draft_id:
+                                        entry["id"] = draft_id
+                                    storage.save_entry(self.user_id, entry)
                                     self._saved_recipe_name_this_session = name
-                                else:
-                                    print(f"[nonna] save_recipe_to_library skipped (already saved '{name}' this session)", flush=True)
                                 await websocket.send_text(json.dumps({"type": "recipe_saved"}))
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
@@ -1290,7 +1260,7 @@ class GeminiSession:
                                     id=fc.id,
                                 ))
                             else:
-                                print(f"[nonna] save_recipe_to_library no recipe to save (current_recipe empty, live_steps={len(self.live_steps)})", flush=True)
+                                print("[nonna] save_recipe_to_library: no recipe to save", flush=True)
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
                                     response={"result": "no_recipe", "message": "No recipe is loaded to save."},
@@ -1355,9 +1325,12 @@ class GeminiSession:
                                 if self.live_steps or self.live_ingredients:
                                     _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
                                     asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
-                                # Notify user immediately; photo is saved even if Live API drops with 1008 after tool response
                                 try:
-                                    await websocket.send_text(json.dumps({"type": "photo_captured", "step_number": step_num}))
+                                    await websocket.send_text(json.dumps({
+                                        "type": "photo_captured",
+                                        "step_number": step_num,
+                                        "data": self.step_photos[-1]["data"],
+                                    }))
                                 except Exception:
                                     pass
                                 # Minimal response to reduce chance of Live API 1008 (known issue with function calls)
@@ -1373,13 +1346,12 @@ class GeminiSession:
                         if fc.name == "complete_step":
                             now = time.time()
                             elapsed = now - self._last_step_completed_at
-                            current_turns = getattr(self, "_turns_completed", 0)
+                            current_turns = self._turns_completed
                             turns_since = current_turns - self._turns_at_last_step
-                            # Block if: (a) less than 10s since last step, OR
-                            #           (b) fewer than 2 turns have passed (model must have spoken, then user must have spoken)
-                            if self._last_step_completed_at > 0 and (elapsed < 10 or turns_since < 2):
-                                reason = f"only {elapsed:.0f}s" if elapsed < 10 else f"only {turns_since} turn(s) since last step"
-                                print(f"[nonna] BLOCKED complete_step — {reason} (need ≥2 turns)", flush=True)
+                            # Block only if BOTH: very fast (<3s) AND no model turn has happened since last step.
+                            # This prevents double-fires while allowing quick steps after user says "next".
+                            if self._last_step_completed_at > 0 and elapsed < 3 and turns_since < 1:
+                                print(f"[nonna] BLOCKED complete_step — {elapsed:.0f}s / {turns_since} turns since last", flush=True)
                                 tool_responses.append(types.FunctionResponse(
                                     name=fc.name,
                                     response={"error": "BLOCKED: You must wait for the user to explicitly say 'done' or 'next' before completing a step. The user has not spoken yet. Stop and wait silently."},
@@ -1397,7 +1369,7 @@ class GeminiSession:
                                 for i in range(1, int(step_num)):
                                     self._completed_step_ids.add(i)
                             self._last_step_completed_at = time.time()
-                            self._turns_at_last_step = getattr(self, "_turns_completed", 0)
+                            self._turns_at_last_step = self._turns_completed
                         await websocket.send_text(json.dumps({
                             "type": "tool_call",
                             "name": fc.name,
@@ -1405,15 +1377,17 @@ class GeminiSession:
                             "call_id": fc.id,
                         }))
                         if fc.name == "complete_step":
+                            msg = "Step marked complete. Read the NEXT step aloud ONCE, briefly, then stop and wait."
                             tool_responses.append(types.FunctionResponse(
                                 name=fc.name,
-                                response={"result": "Step marked complete. Now read the next step aloud ONCE, then stop."},
+                                response={"result": msg},
                                 id=fc.id,
                             ))
                         elif fc.name == "jump_to_step":
+                            msg = "Jumped to step. Read this step aloud ONCE, briefly, then stop and wait."
                             tool_responses.append(types.FunctionResponse(
                                 name=fc.name,
-                                response={"result": "Jumped to step. Now read this step aloud ONCE, then stop."},
+                                response={"result": msg},
                                 id=fc.id,
                             ))
                         else:
@@ -1423,23 +1397,29 @@ class GeminiSession:
                                 id=fc.id,
                             ))
 
-                    # Only suppress post-tool speech when the model spoke in THIS SAME response as the tool call
-                    # (e.g. "Got it, four eggs!" + add_live_ingredient in one batch). If tool_call is in a
-                    # later response (e.g. after turn_complete), her follow-up ("Done, two cups flour") should play.
-                    model_already_spoke = spoke_in_this_response
-                    tool_names = [fc.name for fc in response.tool_call.function_calls]
+                    step_tools = any(
+                        fc2.name in ("complete_step", "jump_to_step")
+                        for fc2 in response.tool_call.function_calls
+                    )
+                    model_already_spoke = spoke_in_this_response or (
+                        step_tools and bool(sent_text_this_turn)
+                    )
 
-                    # Send ALL tool responses at once so model can continue
-                    print(f"[nonna] sending {len(tool_responses)} tool response(s) for {tool_names} (model_already_spoke={model_already_spoke})…", flush=True)
                     await session.send_tool_response(
                         function_responses=tool_responses
                     )
-                    print(f"[nonna] tool responses sent ✓", flush=True)
 
                     if model_already_spoke:
                         suppress_until_turn_complete = True
-                        print(f"[nonna] suppressing post-tool speech (model spoke in same response as {tool_names})", flush=True)
-                    # Clear turn state now that we've used it for model_already_spoke
+                    if step_tools:
+                        # Clear suppress so the model can read the new step.
+                        # Budget=1 allows exactly one turn of speech (the step
+                        # reading + timer offer), then blocks repeats.
+                        suppress_until_turn_complete = False
+                        _step_speech_budget = 1
+                        _step_guard_expires = time.time() + 6
+                    else:
+                        _step_speech_budget = None
                     sent_text_this_turn.clear()
                     seen_tool_calls.clear()
                     pending_turn_complete = False

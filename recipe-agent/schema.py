@@ -13,6 +13,7 @@ class Step(BaseModel):
     instruction: str
     timer_seconds: Optional[int] = None
     visual_checkpoint: bool = False
+    image: Optional[str] = None
 
 
 class RecipeSchema(BaseModel):
@@ -23,3 +24,5 @@ class RecipeSchema(BaseModel):
     ingredients: list[Ingredient]
     steps: list[Step]
     tips: list[str] = []
+    source_url: Optional[str] = None
+    source_images: list[str] = []

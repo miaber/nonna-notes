@@ -1,4 +1,5 @@
 import os
+import traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -84,18 +85,12 @@ async def parse(req: ParseRequest):
         return {"recipe": recipe.model_dump(), "source": source}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        import traceback
-        print(f"[recipe-agent] parse error: {e}\n{traceback.format_exc()}", flush=True)
-        raise HTTPException(status_code=500, detail=f"Recipe parse error: {e}")
     except genai_errors.ClientError as e:
         if getattr(e, "code", None) == 429:
-            raise HTTPException(
-                status_code=503,
-                detail="API rate limit exceeded. Please try again in a minute.",
-            )
+            raise HTTPException(status_code=503, detail="API rate limit exceeded. Please try again in a minute.")
         raise HTTPException(status_code=500, detail=f"Recipe parse error: {e}")
     except Exception as e:
+        print(f"[recipe-agent] parse error: {e}\n{traceback.format_exc()}", flush=True)
         raise HTTPException(status_code=500, detail=f"Recipe parse error: {e}")
 
 
