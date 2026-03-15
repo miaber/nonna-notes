@@ -187,10 +187,18 @@ async def _match_content_images_to_steps(recipe: RecipeSchema, content_images: l
         "(alt text and the paragraph before it). After the photos, you'll see the recipe steps.\n\n"
         "For each image, decide which step it best illustrates. An image may match no step "
         "(e.g. hero/beauty shots of the finished dish, ingredient flat-lays, or unrelated photos).\n\n"
+        "IMPORTANT about paired images: Recipe blogs often place images in PAIRS between "
+        "paragraphs. Each image in a pair typically shows a DIFFERENT cooking action or stage. "
+        "Look carefully at the actual contents of each photo (what is in the bowl, the texture, "
+        "the color, what action is being performed) to match it to the correct step. "
+        "Do NOT assume adjacent images belong to the same step.\n\n"
+        "A COLLAGE image (two photos combined side-by-side in ONE file) showing two distinct "
+        "stages may be assigned to TWO consecutive steps.\n\n"
         "Rules:\n"
-        "- Only match process/action photos (mixing, chopping, baking, etc.), not finished dish glamour shots\n"
-        "- Each step can have at most one image\n"
-        "- A composite image showing multiple stages CAN be assigned to multiple steps\n"
+        "- Only match process/action photos, not finished dish glamour shots or ingredient flat-lays\n"
+        "- Each step should get at most one image\n"
+        "- Collage images can map to multiple steps via the \"steps\" array\n"
+        "- Look at WHAT is happening in each photo, not just the setting or angle\n"
         "- Assignments must respect page order: if image 3 is matched to step 2, image 5 can only match step 2 or later\n"
         "- It is better to leave a step unmatched than to assign a wrong image\n\n"
         "Photos:\n"
@@ -200,7 +208,8 @@ async def _match_content_images_to_steps(recipe: RecipeSchema, content_images: l
         parts.append(img_part)
 
     parts.append(f"\n\nRecipe steps:\n{steps_text}\n\n"
-                 "Return ONLY a JSON array of objects: [{\"image\": <image_index>, \"step\": <step_id>}, ...]\n"
+                 "Return ONLY a JSON array of objects: [{\"image\": <image_index>, \"steps\": [<step_id>, ...]}, ...]\n"
+                 "Each entry's \"steps\" array contains 1 step ID, or 2 consecutive step IDs for collage images.\n"
                  "Only include matches you're confident about. Return [] if no good matches exist.")
 
     try:
@@ -229,14 +238,21 @@ async def _match_content_images_to_steps(recipe: RecipeSchema, content_images: l
     assigned = 0
     for m in matches:
         img_idx = m.get("image")
-        step_id = m.get("step")
-        if img_idx is None or step_id is None:
+        if img_idx is None:
             continue
         url = url_by_idx.get(img_idx)
-        step = step_by_id.get(step_id)
-        if url and step and not step.image:
-            step.image = url
-            assigned += 1
+        if not url:
+            continue
+        step_ids = m.get("steps") or []
+        if not step_ids:
+            single = m.get("step")
+            if single is not None:
+                step_ids = [single]
+        for step_id in step_ids:
+            step = step_by_id.get(step_id)
+            if step and not step.image:
+                step.image = url
+                assigned += 1
 
     if assigned:
         print(f"[recipe-agent] Gemini vision matched {assigned}/{len(recipe.steps)} step(s) to images", flush=True)

@@ -570,7 +570,7 @@ def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bo
             "\n   e. They may talk to you — answer briefly, then STOP again."
             "\n   f. Eventually the user will say 'done', 'next', 'next step', 'what's next', 'move on', or 'finished'."
             "\n   g. ONLY when you hear one of those exact words: call complete_step SILENTLY — do NOT say anything in the same breath as the tool call. Wait for the tool result."
-            "\n   h. After the complete_step tool result comes back, THEN read the next step aloud (go to a). This must be a separate response — never bundle speech with the tool call."
+            "\n   h. After the complete_step tool result comes back, it will contain the next step's text. You MUST read it aloud (go to a). This must be a separate response — never bundle speech with the tool call."
             "\n   i. If the user says ANYTHING ELSE (okay, got it, sure, asks a question, makes a comment): respond briefly and return to (c). Do NOT advance."
             "\n"
             "\n3. **Guardrails:**"
@@ -675,6 +675,15 @@ class GeminiSession:
         self._completed_step_ids: set[int] = set()  # step IDs marked complete during this session
         self._last_step_completed_at: float = 0  # timestamp of last complete_step call
         self._turns_at_last_step: int = 0  # turn count when last complete_step was called
+
+    def _get_step_text(self, step_number: int) -> str | None:
+        """Look up a step's instruction text by 1-based step number."""
+        if not self.current_recipe:
+            return None
+        for s in self.current_recipe.get("steps", []):
+            if s.get("id") == step_number:
+                return s.get("instruction")
+        return None
 
     async def run(self, websocket):
         raw = await websocket.receive_text()
@@ -1391,14 +1400,22 @@ class GeminiSession:
                             "call_id": fc.id,
                         }))
                         if fc.name == "complete_step":
-                            msg = "Step marked complete. Read the NEXT step aloud ONCE, briefly, then stop and wait."
+                            next_step_text = self._get_step_text(int(args.get("step_number", 0)) + 1)
+                            if next_step_text:
+                                msg = f"Step marked complete. Now read step {int(args.get('step_number', 0)) + 1} aloud: \"{next_step_text}\" — say it ONCE, then stop."
+                            else:
+                                msg = "All steps complete! Congratulate the cook."
                             tool_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 response={"result": msg},
                                 id=fc.id,
                             ))
                         elif fc.name == "jump_to_step":
-                            msg = "Jumped to step. Read this step aloud ONCE, briefly, then stop and wait."
+                            step_text = self._get_step_text(int(args.get("step_number", 0)))
+                            if step_text:
+                                msg = f"Jumped to step {args.get('step_number')}. Read it aloud: \"{step_text}\" — say it ONCE, then stop."
+                            else:
+                                msg = f"Jumped to step {args.get('step_number')}. Read it aloud ONCE, then stop."
                             tool_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 response={"result": msg},
@@ -1439,7 +1456,7 @@ class GeminiSession:
                         # reading + timer offer), then blocks repeats.
                         suppress_until_turn_complete = False
                         _step_speech_budget = 1
-                        _step_guard_expires = time.time() + 15
+                        _step_guard_expires = time.time() + 4
                     elif _step_speech_budget is None:
                         # Only clear budget if no step guard is active —
                         # a non-step tool (e.g. set_timer) called right

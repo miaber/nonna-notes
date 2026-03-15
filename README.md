@@ -24,6 +24,7 @@ Real-time AI cooking companion powered by Gemini Live API. Nonna watches your ki
 | **Gemini API key** | **Yes** | [ai.google.dev](https://ai.google.dev) - sign in and create a key | **Generative Language API** must be enabled ([link](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com)). The Live API also requires billing enabled on the project. |
 | **YouTube Data API key** | Recommended | Same GCP project, create/reuse an API key | **YouTube Data API v3** must be enabled ([link](https://console.cloud.google.com/apis/library/youtube.googleapis.com)). Powers background music search and YouTube recipe video metadata. |
 | **YouTube Transcript API key** | Optional | [youtubetranscript.dev](https://youtubetranscript.dev) - sign up for an API key | No GCP setup needed - this is a third-party service. Used as a fallback for fetching YouTube video transcripts (especially on cloud deployments where the direct library is blocked). |
+| **Firebase API key** | For deploy | Firebase console → Project settings → Web app | Used by the frontend for Google Sign-In. Run `firebase apps:sdkconfig web` to get it. Only needed for production deployment with user auth. |
 
 > **Common gotcha:** If the Generative Language API is not enabled for the GCP project tied to your Gemini key, the app will fail to connect (you'll see repeated retry attempts). Double-check it's enabled at the link above.
 
@@ -38,6 +39,7 @@ cat > .env <<'EOF'
 GEMINI_API_KEY=your-gemini-key-here
 YOUTUBE_API_KEY=your-youtube-key-here
 YOUTUBE_TRANSCRIPT_DEV_API_KEY=your-transcript-key-here
+FB_API_KEY=your-firebase-api-key-here
 EOF
 
 # Backend
