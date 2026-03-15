@@ -315,7 +315,7 @@ TOOLS = [
         function_declarations=[
             types.FunctionDeclaration(
                 name="set_timer",
-                description="Start a countdown timer. Recipe mode only — call when the user says to start timing a step. Not for document mode.",
+                description="Start a countdown timer. Recipe mode only. Call IMMEDIATELY when the user agrees to a timer (e.g. 'yes', 'sure', 'yeah', 'ok', 'go ahead', 'please') OR asks for one (e.g. 'set a timer', 'start the timer'). Do NOT wait for further confirmation — 'yes' to 'Want me to set a timer?' means call this tool NOW. Not for document mode.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
@@ -581,7 +581,7 @@ def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bo
             "\n   - When you ask a question, STOP and wait for the answer. Never answer your own question."
             "\n   - After calling any tool, do NOT narrate what it did — the user sees the UI update."
             "\n"
-            "\n4. **Timer:** Call set_timer only when the user explicitly agrees to a timer or asks for one."
+            "\n4. **Timer:** When the user says 'yes', 'sure', 'yeah', 'ok', or any agreement to your timer question — call set_timer IMMEDIATELY in that same turn. Do not ask again or wait for more confirmation. One 'yes' = call the tool."
             "\n5. **Show, photo, feedback:** Often prompt the user to show you what they're doing so you can take a picture and give feedback. Wait until they respond or you have a good view before taking the photo. When you do take it, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'), then call capture_step_photo, then give brief feedback. Do this at least once per step, and more often for longer or visual steps."
             "\n6. **Save:** If the user asks to save the recipe, call save_recipe_to_library in the same turn. If the recipe was loaded from My Recipes (i.e. the user chose to recook it), do NOT offer to save — it is already saved."
             "\n7. **Edits:** If the user wants to change an ingredient, call edit_ingredient. For a step, call edit_step (instruction and/or timer). If they say 'add 5 mins to step 2' (or similar), call edit_step(step_number=2, timer_seconds=300) — you can omit instruction and the current step text is kept. Confirm in one sentence, then STOP."
