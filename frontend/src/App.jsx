@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useGeminiLive } from "./hooks/useGeminiLive";
 import { useAuth } from "./context/AuthContext";
+import { isAuthConfigured } from "./firebase";
 import TimerPanel from "./components/TimerPanel";
 import RecipePanel from "./components/RecipePanel";
 import RecipeSteps from "./components/RecipeSteps";
@@ -220,7 +221,7 @@ export default function App() {
   }
 
   const requireAuth = import.meta.env.VITE_REQUIRE_AUTH !== "false";
-  if (user === null && !isGuest && getToken === null && !!import.meta.env.VITE_FIREBASE_API_KEY && requireAuth) {
+  if (isAuthConfigured && requireAuth && user === null && !isGuest && getToken === null) {
     return (
       <div className="auth-screen">
         <h1 className="logo">Nonna Notes</h1>

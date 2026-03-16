@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&family=Montserrat:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Dancing+Script:wght@500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&family=Montserrat:ital,wght@0,400;0,500;0,600;1,400&display=swap');
 
 :root {
   /* Retro Italian food packaging: warm coral, golden mustard, cream */
@@ -142,7 +142,7 @@ body {
 }
 
 .home-book-oval span {
-  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-family: 'Brush Script MT', 'Brush Script Std', 'Dancing Script', cursive;
   font-size: 1.85rem;
   color: #2a2a2a;
   line-height: 1.2;
@@ -192,7 +192,7 @@ body {
 }
 
 .follow-title {
-  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-family: 'Brush Script MT', 'Brush Script Std', 'Dancing Script', cursive;
   font-size: 2rem;
   color: var(--text);
   margin: 0 0 0.25rem;
@@ -489,7 +489,7 @@ body {
 }
 
 .logo {
-  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-family: 'Brush Script MT', 'Brush Script Std', 'Dancing Script', cursive;
   font-size: 2.5rem;
   font-weight: 400;
   color: #D95B43;
@@ -2505,7 +2505,7 @@ body {
   color: var(--text);
 }
 .auth-screen .logo {
-  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-family: 'Brush Script MT', 'Brush Script Std', 'Dancing Script', cursive;
   font-size: 3.5rem;
   color: #F5EBD7;
   text-shadow: 0 2px 6px rgba(58, 46, 38, 0.35);

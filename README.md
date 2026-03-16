@@ -1,68 +1,59 @@
 # Nonna Notes
 
-Real-time AI cooking companion powered by Gemini Live API. Nonna watches your kitchen through the camera, listens for questions, and responds with voice — walking you through recipes step-by-step or documenting your freestyle cooks as you go.
+Real-time AI cooking companion powered by Gemini Live API. Nonna watches your kitchen through the camera, listens for questions, and responds with voice, walking you through recipes step-by-step or documenting your freestyle cooks as you go.
 
 ## Features
 
-- **Voice-guided cooking** — Nonna reads recipe steps aloud and waits for you to say "next"
-- **Recipe parsing** — paste any recipe URL or YouTube cooking video and get a structured recipe
-- **Document mode** — cook without a recipe and Nonna records steps + ingredients as you go
-- **Timers** — hands-free timer management via voice
-- **Step photos** — Nonna prompts you to show your progress and captures photos
-- **My Recipes** — save, browse, and re-cook your recipe library
-- **Background music** — ask Nonna to play music while you cook
-- **Easter egg** — tap the logo 5 times to unlock Gordon Ramsay mode
+- **Voice-guided cooking:** Nonna reads recipe steps aloud and waits for you to say "next"
+- **Recipe parsing:** Paste any recipe URL or YouTube cooking video and get a structured recipe
+- **Document mode:** Cook without a recipe and Nonna records steps and ingredients as you go
+- **Timers:** Hands-free timer management via voice
+- **Step photos:** Nonna prompts you to show your progress and captures photos
+- **My Recipes:** Save, browse, and re-cook your recipe library
+- **Background music:** Ask Nonna to play music while you cook
+- **Easter egg:** Tap the logo 5 times to unlock Gordon Ramsay mode
 
 ## Quick Start
 
-**Prerequisites:** Python 3.10+, Node.js 18+, Chrome (required for camera + AudioWorklet APIs).
+**Prerequisites:** Python 3.10+, Node.js 18+, and a modern browser (Chrome, Firefox, or Safari) for camera and microphone.
 
-### 1. Get a Gemini API key
+### 1. Get API keys
 
-Get a key from [ai.google.dev](https://ai.google.dev). Make sure the **Generative Language API** is [enabled](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com) and billing is active on the GCP project (required for the Live API).
+You need **GEMINI_API_KEY** (required) and optionally **YOUTUBE_API_KEY**. In [Google Cloud Console](https://console.cloud.google.com): enable **Generative Language API** and billing; optionally **YouTube Data API v3**. Create an API key under **APIs & Services**, **Credentials**. Keys can be from any GCP project. ([Alternative: Gemini key from Google AI Studio](https://ai.google.dev) if that project has the API enabled and billing on.)
 
-Optionally, enable **YouTube Data API v3** on the same project for background music search.
+### 2. Setup (one command)
 
-### 2. Clone and install
+**macOS / Linux:**
 
 ```bash
 git clone https://github.com/miaber/nonna-notes.git
 cd nonna-notes
-
-# Create .env in the project root
-cat > .env <<'EOF'
-GEMINI_API_KEY=your-gemini-key-here
-YOUTUBE_API_KEY=your-youtube-key-here          # optional, for music
-EOF
-
-# Backend
-cd backend && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt && cd ..
-
-# Recipe Agent
-cd recipe-agent && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt && cd ..
-
-# Frontend
-cd frontend && npm install && cd ..
+./scripts/setup.sh
 ```
 
-### 3. Start all three services
+Then edit `.env` in the project root and add your keys. (Setup creates `.env` from `.env.example` if it doesn't exist.)
 
-Open three terminals:
+**Windows (PowerShell, from repo root):**
+
+```powershell
+git clone https://github.com/miaber/nonna-notes.git
+cd nonna-notes
+.\scripts\setup.ps1
+```
+
+Then edit `.env` in the project root and add your keys.
+
+### 3. Run
+
+**macOS / Linux (one terminal):**
 
 ```bash
-# Terminal 1 — Backend (port 8000)
-cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
-
-# Terminal 2 — Recipe Agent (port 8001)
-cd recipe-agent && source venv/bin/activate && uvicorn main:app --reload --port 8001
-
-# Terminal 3 — Frontend (port 5173)
-cd frontend && npm run dev
+./scripts/run.sh
 ```
 
-### 4. Open the app
+Then open **http://localhost:5173**, grant camera and microphone, and click **Start Cooking**. Press Ctrl+C to stop all services.
 
-Go to **http://localhost:5173**, grant camera + microphone access, and click **Start Cooking**.
+**Windows (one terminal, from repo root):** `.\scripts\run.ps1` then open http://localhost:5173. Press Ctrl+C to stop. Or run manually in three terminals: backend (`cd backend`, `venv\Scripts\activate`, `uvicorn main:app --reload --port 8000`), recipe-agent (same with `recipe-agent`, port 8001), frontend (`cd frontend`, `npm run dev`).
 
 ## Architecture
 
