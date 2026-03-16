@@ -13,7 +13,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 const RECIPE_AGENT_URL = import.meta.env.VITE_RECIPE_AGENT_URL || "http://localhost:8001";
 
 export default function App() {
-  const { user, signInWithGoogle, logout, getToken } = useAuth();
+  const { user, isGuest, signInWithGoogle, continueAsGuest, logout, getToken } = useAuth();
 
   const videoRef = useRef(null);
   const cameraColRef = useRef(null);
@@ -29,6 +29,8 @@ export default function App() {
   const [showLibrary, setShowLibrary] = useState(false);
   const [homeView, setHomeView] = useState(null); // null = books, "follow" = recipe input
   const [toast, setToast] = useState(null);
+  const [cameraFlash, setCameraFlash] = useState(false);
+  const prevCapturedPhotosRef = useRef({});
   const logoTapCount = useRef(0);
   const logoTapTimeout = useRef(null);
 
@@ -55,6 +57,7 @@ export default function App() {
     const t = setTimeout(dismissToast, 2500);
     return () => clearTimeout(t);
   }, [toast, dismissToast]);
+
   const {
     status,
     transcript,
@@ -82,6 +85,19 @@ export default function App() {
     setCapturedPhotos,
     stopMusic,
   } = useGeminiLive();
+
+  useEffect(() => {
+    const prev = prevCapturedPhotosRef.current;
+    const added = Object.keys(capturedPhotos).some(
+      (k) => (capturedPhotos[k]?.length || 0) > (prev[k]?.length || 0)
+    );
+    prevCapturedPhotosRef.current = capturedPhotos;
+    if (added) {
+      setCameraFlash(true);
+      const t = setTimeout(() => setCameraFlash(false), 600);
+      return () => clearTimeout(t);
+    }
+  }, [capturedPhotos]);
 
   const handleStart = (resumeDraft = false, resumeDraftStartedAt = null, documentMode = false) => {
     const recipeValue = resumeDraft ? "" : (recipeInputRef.current?.value?.trim() || recipe.trim());
@@ -203,7 +219,7 @@ export default function App() {
   }
 
   const requireAuth = import.meta.env.VITE_REQUIRE_AUTH !== "false";
-  if (user === null && getToken === null && !!import.meta.env.VITE_FIREBASE_API_KEY && requireAuth) {
+  if (user === null && !isGuest && getToken === null && !!import.meta.env.VITE_FIREBASE_API_KEY && requireAuth) {
     return (
       <div className="auth-screen">
         <h1 className="logo">Nonna Notes</h1>
@@ -211,6 +227,12 @@ export default function App() {
         <button className="start-btn auth-google-btn" onClick={signInWithGoogle}>
           Sign in with Google
         </button>
+        <div className="auth-guest-group">
+          <button className="auth-guest-btn" onClick={continueAsGuest}>
+            Continue without signing in
+          </button>
+          <p className="auth-guest-note">Recipes won't be synced across devices</p>
+        </div>
       </div>
     );
   }
@@ -245,6 +267,11 @@ export default function App() {
               Sign out
             </button>
           )}
+          {!user && isGuest && (
+            <button type="button" className="library-btn library-btn-signin" onClick={signInWithGoogle} title="Sign in to save recipes across devices">
+              Sign in
+            </button>
+          )}
         </div>
       </header>
 
@@ -255,7 +282,7 @@ export default function App() {
             <button type="button" className="home-book home-book-follow" onClick={() => setHomeView("follow")}>
               <span className="home-book-spine" />
               <span className="home-book-oval"><span>Follow a Recipe</span></span>
-              <span className="home-book-desc">Paste a URL, YouTube video, or snap a photo of a recipe</span>
+              <span className="home-book-desc">Paste a URL, YouTube video, or snap a photo of a recipe. Or ask Nonna to find one for you!</span>
             </button>
             <button type="button" className="home-book home-book-record" onClick={() => handleStart(false, null, true)}>
               <span className="home-book-spine" />
@@ -265,7 +292,7 @@ export default function App() {
             <button type="button" className="home-book home-book-library" onClick={() => setShowLibrary(true)}>
               <span className="home-book-spine" />
               <span className="home-book-oval"><span>My Recipes</span></span>
-              <span className="home-book-desc">View your saved recipes</span>
+              <span className="home-book-desc">{isGuest && !user ? "Sign in to save recipes across devices" : "View your saved recipes"}</span>
             </button>
           </div>
         </main>
@@ -330,6 +357,7 @@ export default function App() {
         <div className="main-camera" ref={cameraColRef}>
           <div className="camera-container">
             <video ref={videoRef} autoPlay muted playsInline className="camera-feed" />
+            {cameraFlash && <div className="camera-flash" />}
             {isReconnecting && (
               <div className="camera-overlay reconnecting-overlay">
                 <div className="reconnecting-indicator">

@@ -233,6 +233,7 @@ body {
   grid-template-rows: auto 1fr;
   gap: 1.25rem 1.5rem;
   align-items: start;
+  margin-top: 1rem;
 }
 
 .main-cooking > .main-camera {
@@ -445,6 +446,15 @@ body {
   color: var(--red);
 }
 
+.library-btn-signin {
+  color: var(--text-dim);
+}
+
+.library-btn-signin:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .header-btn {
   font-family: 'Montserrat', sans-serif;
   font-size: 0.85rem;
@@ -531,6 +541,20 @@ body {
     0 0 0 12px #D4A535,
     0 0 0 18px #D95B43,
     0 4px 20px rgba(58, 46, 38, 0.15);
+}
+
+.camera-flash {
+  position: absolute;
+  inset: 0;
+  background: white;
+  pointer-events: none;
+  z-index: 10;
+  animation: camera-flash-out 0.55s ease-out forwards;
+}
+
+@keyframes camera-flash-out {
+  0% { opacity: 0.9; }
+  100% { opacity: 0; }
 }
 
 .camera-feed {
@@ -2497,4 +2521,34 @@ body {
   color: var(--accent);
   border: 2px solid var(--gold);
   box-shadow: 0 2px 12px rgba(58, 46, 38, 0.2);
+}
+
+.auth-guest-btn {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  font-size: 0.9rem;
+  background: transparent;
+  color: rgba(251, 244, 233, 0.75);
+  border: 1px solid rgba(251, 244, 233, 0.35);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.auth-guest-btn:hover {
+  color: rgba(251, 244, 233, 1);
+  border-color: rgba(251, 244, 233, 0.7);
+}
+
+.auth-guest-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.auth-guest-note {
+  font-size: 0.78rem;
+  color: rgba(251, 244, 233, 0.5);
+  text-align: center;
+  margin: 0;
 }

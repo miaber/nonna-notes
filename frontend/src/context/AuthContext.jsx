@@ -6,10 +6,14 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(auth ? undefined : null);
+  const [isGuest, setIsGuest] = useState(false);
 
   useEffect(() => {
     if (!auth) return;
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) setIsGuest(false); // clear guest mode on real sign-in
+    });
     return unsubscribe;
   }, []);
 
@@ -23,10 +27,12 @@ export function AuthProvider({ children }) {
 
   const logout = () => signOut(auth);
 
+  const continueAsGuest = () => setIsGuest(true);
+
   const getToken = user ? () => user.getIdToken() : null;
 
   return (
-    <AuthContext.Provider value={{ user, signInWithGoogle, logout, getToken }}>
+    <AuthContext.Provider value={{ user, isGuest, signInWithGoogle, continueAsGuest, logout, getToken }}>
       {children}
     </AuthContext.Provider>
   );
