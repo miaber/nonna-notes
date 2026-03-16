@@ -19,11 +19,17 @@ Real-time AI cooking companion powered by Gemini Live API. Nonna watches your ki
 
 ### 1. Get API keys
 
-You need **GEMINI_API_KEY** (required) and optionally **YOUTUBE_API_KEY**. In [Google Cloud Console](https://console.cloud.google.com): enable **Generative Language API** and billing; optionally **YouTube Data API v3**. Create an API key under **APIs & Services**, **Credentials**. Keys can be from any GCP project. ([Alternative: Gemini key from Google AI Studio](https://ai.google.dev) if that project has the API enabled and billing on.)
+You need **GEMINI_API_KEY** (required) and optionally **YOUTUBE_API_KEY**.
 
-### 2. Setup (one command)
+1. Open [Google Cloud Console](https://console.cloud.google.com) and create or select a project.
+2. Enable **[Generative Language API](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com)** for that project (required for Gemini). Turn on **billing** for the project (required for the Live API).
+3. Optionally enable **[YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com)** for music and YouTube recipe parsing.
+4. Go to **APIs & Services**, **Credentials**, **Create credentials**, **API key**. Use it as `GEMINI_API_KEY`; you can use the same key for `YOUTUBE_API_KEY` if both APIs are enabled.
 
-**macOS / Linux:**
+
+### 2. Setup
+
+**macOS / Linux**
 
 ```bash
 git clone https://github.com/miaber/nonna-notes.git
@@ -31,9 +37,7 @@ cd nonna-notes
 ./scripts/setup.sh
 ```
 
-Then edit `.env` in the project root and add your keys. (Setup creates `.env` from `.env.example` if it doesn't exist.)
-
-**Windows:**
+**Windows (PowerShell)**
 
 ```powershell
 git clone https://github.com/miaber/nonna-notes.git
@@ -41,27 +45,27 @@ cd nonna-notes
 .\scripts\setup.ps1
 ```
 
-Then edit `.env` in the project root and add your keys.
+Then edit `.env` in the project root and add your keys. (Setup creates `.env` from `.env.example` if it doesn't exist.)
 
 ### 3. Run
 
-**macOS / Linux:**
+**macOS / Linux**
 
 ```bash
 ./scripts/run.sh
 ```
 
+**Windows (PowerShell)**
+
+```powershell
+.\scripts\run.ps1
+```
+
 Then open **http://localhost:5173**, grant camera and microphone, and click **Start Cooking**. Press Ctrl+C to stop all services.
 
-**Windows:** `.\scripts\run.ps1` then open http://localhost:5173. Press Ctrl+C to stop. Or run manually in three terminals: backend (`cd backend`, `venv\Scripts\activate`, `uvicorn main:app --reload --port 8000`), recipe-agent (same with `recipe-agent`, port 8001), frontend (`cd frontend`, `npm run dev`).
+Local dev skips auth (guest mode).
 
-| Service | Port | Purpose |
-|---|---|---|
-| **backend** | 8000 | WebSocket proxy to Gemini Live API, recipe CRUD endpoints |
-| **recipe-agent** | 8001 | Parses recipe URLs, YouTube videos, and uploaded images into structured recipes |
-| **frontend** | 5173 | React SPA (Vite dev server) |
-
-### Tech stack
+## Tech stack
 
 - **Frontend:** React, Vite, AudioWorklet, Canvas
 - **Backend:** Python, FastAPI, `google-genai` SDK (Gemini Live API)
