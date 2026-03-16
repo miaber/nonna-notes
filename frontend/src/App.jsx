@@ -29,12 +29,14 @@ export default function App() {
   const [showLibrary, setShowLibrary] = useState(false);
   const [homeView, setHomeView] = useState(null); // null = books, "follow" = recipe input
   const [toast, setToast] = useState(null);
-  const [cameraFlash, setCameraFlash] = useState(false);
+  const [cameraFlashKey, setCameraFlashKey] = useState(0);
   const prevCapturedPhotosRef = useRef({});
   const logoTapCount = useRef(0);
   const logoTapTimeout = useRef(null);
+  const isCookingRef = useRef(false);
 
   const handleLogoClick = useCallback(() => {
+    if (isCookingRef.current) return;
     logoTapCount.current += 1;
     if (logoTapCount.current >= 5) {
       logoTapCount.current = 0;
@@ -93,9 +95,7 @@ export default function App() {
     );
     prevCapturedPhotosRef.current = capturedPhotos;
     if (added) {
-      setCameraFlash(true);
-      const t = setTimeout(() => setCameraFlash(false), 600);
-      return () => clearTimeout(t);
+      setCameraFlashKey((k) => k + 1);
     }
   }, [capturedPhotos]);
 
@@ -162,6 +162,7 @@ export default function App() {
   };
 
   const isCooking = status !== "idle";
+  isCookingRef.current = isCooking;
 
   // When recipe is saved via the button, wire up libraryRecipeId so edits persist
   useEffect(() => {
@@ -357,7 +358,7 @@ export default function App() {
         <div className="main-camera" ref={cameraColRef}>
           <div className="camera-container">
             <video ref={videoRef} autoPlay muted playsInline className="camera-feed" />
-            {cameraFlash && <div className="camera-flash" />}
+            {cameraFlashKey > 0 && <div key={cameraFlashKey} className="camera-flash" />}
             {isReconnecting && (
               <div className="camera-overlay reconnecting-overlay">
                 <div className="reconnecting-indicator">
@@ -398,7 +399,6 @@ export default function App() {
           {isCooking && currentStep && (
             <div className="current-step-callout current-step-callout-orange">
               <div className="current-step-content">
-                <span className="current-step-label">Step {currentStep.id}</span>
                 <span className="current-step-text">{currentStep.instruction}</span>
               </div>
               {(currentStep.image || capturedPhotos[currentStep.id]?.length > 0) && (
@@ -419,7 +419,7 @@ export default function App() {
           <div className="main-conversation" ref={convoRef}>
             {transcript.length > 0 && <p className="transcript-label">Conversation</p>}
             <div className="transcript">
-              {[...transcript].reverse().map((msg, i) => {
+              {[...transcript].slice(-50).reverse().map((msg, i) => {
                 const origIndex = transcript.length - 1 - i;
                 return (
                   <div key={origIndex} className={`msg ${msg.role}`}>

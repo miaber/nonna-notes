@@ -394,10 +394,13 @@ export function useGeminiLive() {
       } else if (data.type === "transcript") {
         setTranscript((prev) => {
           const last = prev[prev.length - 1];
+          let next;
           if (last && last.role === "assistant" && !last.complete) {
-            return [...prev.slice(0, -1), { ...last, text: last.text + data.text }];
+            next = [...prev.slice(0, -1), { ...last, text: last.text + data.text }];
+          } else {
+            next = [...prev, { role: "assistant", text: data.text, complete: false }];
           }
-          return [...prev, { role: "assistant", text: data.text, complete: false }];
+          return next.length > 200 ? next.slice(-200) : next;
         });
       } else if (data.type === "turn_complete") {
         // Don't clear isSpeaking immediately — buffered audio may still be playing.
