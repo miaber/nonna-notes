@@ -231,7 +231,7 @@ body {
   display: grid;
   grid-template-columns: 220px 1fr 280px;
   grid-template-rows: auto 1fr;
-  gap: 1.25rem 1.5rem;
+  gap: 2.25rem 1.5rem;
   align-items: start;
   margin-top: 1rem;
 }
@@ -2098,6 +2098,10 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
   gap: 0.5rem;
   margin-top: 0.35rem;
+}
+
+.library-hero-images {
+  margin-bottom: 1rem;
 }
 
 .library-photo-wrap {

@@ -1,7 +1,6 @@
 # Run from repo root. Starts backend, recipe-agent, and frontend in one terminal; all logs stream here.
 # Usage: .\scripts\run.ps1   (from repo root)
 
-$ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
 
@@ -10,9 +9,12 @@ function Stop-ProcessOnPort {
   try {
     $conn = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
     if ($conn) {
-      $conn.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+      $conn.OwningProcess | Sort-Object -Unique | ForEach-Object {
+        Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+      }
     }
   } catch {}
+  Start-Sleep -Milliseconds 200
 }
 
 Write-Host "Freeing ports 8000, 8001, 5173..."

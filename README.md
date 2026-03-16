@@ -22,10 +22,9 @@ Real-time AI cooking companion powered by Gemini Live API. Nonna watches your ki
 You need **GEMINI_API_KEY** (required) and optionally **YOUTUBE_API_KEY**.
 
 1. Open [Google Cloud Console](https://console.cloud.google.com) and create or select a project.
-2. Enable **[Generative Language API](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com)** for that project (required for Gemini). Turn on **billing** for the project (required for the Live API).
-3. Optionally enable **[YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com)** for music and YouTube recipe parsing.
-4. Go to **APIs & Services**, **Credentials**, **Create credentials**, **API key**. Use it as `GEMINI_API_KEY`; you can use the same key for `YOUTUBE_API_KEY` if both APIs are enabled.
-
+2. For your project, enable **[Generative Language API](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com)** (required for Gemini) and turn on **billing** (required for the Live API).
+3. For your project, enable **[YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com)** if you want music search or YouTube recipe URLs.
+4. In **APIs & Services**, **Credentials**, create an API key. Use it as `GEMINI_API_KEY`; you can use the same key for `YOUTUBE_API_KEY` if both APIs are enabled in your project. You only need two keys if you want to restrict access (e.g. one key for Gemini, one for YouTube).
 
 ### 2. Setup
 
@@ -45,17 +44,14 @@ cd nonna-notes
 .\scripts\setup.ps1
 ```
 
-Then edit `.env` in the project root and add your keys. (Setup creates `.env` from `.env.example` if it doesn't exist.)
+Then edit `.env` in the project root and add your keys.
 
 ### 3. Run
 
-**macOS / Linux**
 
 ```bash
 ./scripts/run.sh
 ```
-
-**Windows (PowerShell)**
 
 ```powershell
 .\scripts\run.ps1
@@ -64,10 +60,3 @@ Then edit `.env` in the project root and add your keys. (Setup creates `.env` fr
 Then open **http://localhost:5173**, grant camera and microphone, and click **Start Cooking**. Press Ctrl+C to stop all services.
 
 Local dev skips auth (guest mode).
-
-## Tech stack
-
-- **Frontend:** React, Vite, AudioWorklet, Canvas
-- **Backend:** Python, FastAPI, `google-genai` SDK (Gemini Live API)
-- **Recipe Agent:** Python, FastAPI, `google-genai` SDK, BeautifulSoup4
-- **Production:** Google Cloud Run, Firebase Hosting, Firebase Auth, Firebase Storage

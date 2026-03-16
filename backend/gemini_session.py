@@ -516,7 +516,7 @@ TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="edit_ingredient",
-                description="Change an ingredient in the current recipe (e.g. swap swiss for cheddar, update amount). Index is 0-based from the ingredient list. Pass all fields.",
+                description="Change an ingredient in the current recipe OR in document mode (e.g. swap swiss for cheddar, update amount, fix a missing quantity). Index is 0-based from the ingredient list. Pass all fields. In document mode, use this instead of adding a duplicate ingredient.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
@@ -617,11 +617,11 @@ def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bo
             "\n• Greet and ask what they want to cook. When they name a dish, ask ONE clarifying question, then call fetch_recipe. Never recite a recipe yourself."
             "\n• Only call fetch_recipe after they have answered your clarifying question. Never assume a dish name — if in doubt, ask."
             "\n\n=== CRITICAL: ONE MODE PER SESSION ==="
-            "\n• Document mode and recipe-finding mode do NOT mix. If the user said they want to document: only use add_live_step, add_live_ingredient, set_draft_name, finalize_live_recipe — never fetch_recipe."
+            "\n• Document mode and recipe-finding mode do NOT mix. If the user said they want to document: only use add_live_step, add_live_ingredient, edit_ingredient, set_draft_name, finalize_live_recipe — never fetch_recipe."
             "\n• If you are already documenting (e.g. you have added steps or ingredients), do NOT call fetch_recipe for any reason."
             "\n• Ambiguous: if they say 'we're making X today' or 'I'm cooking X' without clearly asking for a recipe, ask: 'Are you following a recipe, or shall I watch and document what you make?' Wait for their answer."
             "\n\nDOCUMENT MODE rules (when in document mode) — follow these exactly:"
-            "\n• INGREDIENTS — CRITICAL: The ONLY way an ingredient appears on screen is when you call add_live_ingredient. Saying 'Four eggs it is' or 'I'll add that' does NOTHING — you must call the tool in the SAME turn. Example: User says 'document my egg recipe, I need four eggs' or 'four eggs' → you MUST call add_live_ingredient(amount='4', item='eggs', prep='') in that same response (you may speak after, e.g. 'Bene! Four eggs.'). When they mention an ingredient with an amount, call add_live_ingredient immediately in the SAME turn. If no amount given, ask 'How much?' first, then call once you have the answer. If the user says an ingredient was wrong or shouldn't be there, call delete_live_ingredient(index) — index is 1-based."
+            "\n• INGREDIENTS — CRITICAL: The ONLY way an ingredient appears on screen is when you call add_live_ingredient. Saying 'Four eggs it is' or 'I'll add that' does NOTHING — you must call the tool in the SAME turn. Example: User says 'document my egg recipe, I need four eggs' or 'four eggs' → you MUST call add_live_ingredient(amount='4', item='eggs', prep='') in that same response (you may speak after, e.g. 'Bene! Four eggs.'). When they mention an ingredient with an amount, call add_live_ingredient immediately in the SAME turn. If no amount given, ask 'How much?' first, then call once you have the answer. If the user corrects an ingredient (e.g. changes the amount), call edit_ingredient(index, ...) — index is 0-based. NEVER add a duplicate ingredient when you should edit the existing one. If an ingredient was wrong or shouldn't be there at all, call delete_live_ingredient(index) — index is 1-based."
             "\n• STEPS: Call add_live_step whenever you describe or narrate a step the cook is doing — whether they say it, you see it on camera and say it back to them, or both. The key rule: if you narrate a step in your speech ('now you pour the water', 'Nonna sees you chopping'), you MUST also call add_live_step for it. Do NOT narrate steps you have not recorded. The only time to ask is if you genuinely cannot tell what they are doing at all."
             "\n• CORRECTING STEPS: When the user says a step was wrong, didn't happen, or needs changing: ALWAYS use delete_live_step or edit_live_step immediately — do NOT just add a new step on top of the wrong one. edit_live_step is preferred when the instruction only needs minor correction. delete_live_step is for steps that simply should not have been recorded. Step numbers are shown on screen (1-based). If the user says 'that last step was wrong', the step to fix is step number equal to the current count."
             "\n• INSERTING STEPS: To add a step between existing ones, call add_live_step with position=N to insert at position N (pushes existing steps down). Omit position to append at the end."
@@ -1407,6 +1407,11 @@ class GeminiSession:
                                     "item": (args.get("item") or "").strip(),
                                     "prep": (args.get("prep") or "").strip(),
                                 }
+                                # Update live_ingredients in document mode
+                                if self.live_ingredients and 0 <= idx < len(self.live_ingredients):
+                                    self.live_ingredients[idx] = ing
+                                    _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
+                                    asyncio.create_task(asyncio.to_thread(_write_draft, self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id))
                                 await websocket.send_text(json.dumps({"type": "edit_ingredient", "index": idx, "ingredient": ing}))
                             tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
                             continue

@@ -121,23 +121,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.music-play-pause-btn {
-  background: var(--accent);
-  color: var(--bg);
-  border: none;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  flex-shrink: 0;
-}
-.music-play-pause-btn:hover {
-  background: var(--accent-dim);
-}
 .music-player-compact-bar .music-close-btn {
   color: rgba(255,255,255,0.8);
   font-size: 14px;

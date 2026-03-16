@@ -7,13 +7,17 @@ cd "$ROOT"
 
 # Free ports in case a previous run didn't exit cleanly
 for port in 8000 8001 5173; do
-  pid=$(lsof -ti:"$port" 2>/dev/null) && kill $pid 2>/dev/null || true
+  pid=$(lsof -ti:"$port" 2>/dev/null) || pid=""
+  if [ -n "$pid" ]; then
+    kill -9 $pid 2>/dev/null || true
+    sleep 0.5
+  fi
 done
 sleep 1
 
 cleanup() {
   echo "Stopping services..."
-  kill $BACKEND_PID $RECIPE_PID 2>/dev/null
+  kill $BACKEND_PID $RECIPE_PID 2>/dev/null || true
   exit 0
 }
 trap cleanup SIGINT SIGTERM
