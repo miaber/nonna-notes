@@ -1,4 +1,5 @@
-# Run from repo root. Starts backend, recipe-agent, and frontend (one terminal).
+# Run from repo root. Starts backend, recipe-agent, and frontend.
+# Backend and recipe-agent open in separate windows (logs stream there). Frontend runs in this terminal.
 # Usage: .\scripts\run.ps1   (from repo root)
 
 $ErrorActionPreference = "Stop"
@@ -19,23 +20,15 @@ Write-Host "Freeing ports 8000, 8001, 5173..."
 8000, 8001, 5173 | ForEach-Object { Stop-ProcessOnPort $_ }
 Start-Sleep -Seconds 1
 
-$backendJob = Start-Job -ScriptBlock {
-  Set-Location $using:Root
-  Set-Location backend
-  & .\venv\Scripts\uvicorn.exe main:app --reload --port 8000
-} -Name Backend
+$backendCmd = "Set-Location '$Root\backend'; .\venv\Scripts\uvicorn.exe main:app --reload --port 8000"
+$recipeCmd = "Set-Location '$Root\recipe-agent'; .\venv\Scripts\uvicorn.exe main:app --reload --port 8001"
 
-$recipeJob = Start-Job -ScriptBlock {
-  Set-Location $using:Root
-  Set-Location recipe-agent
-  & .\venv\Scripts\uvicorn.exe main:app --reload --port 8001
-} -Name RecipeAgent
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -WindowStyle Normal
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $recipeCmd -WindowStyle Normal
 
 try {
   Set-Location frontend
   npm run dev
 } finally {
-  Write-Host "Stopping services..."
-  Stop-Job $backendJob, $recipeJob -ErrorAction SilentlyContinue
-  Remove-Job $backendJob, $recipeJob -Force -ErrorAction SilentlyContinue
+  Write-Host "Frontend stopped. Close the Backend and Recipe Agent windows to stop those services."
 }

@@ -33,7 +33,7 @@ cd nonna-notes
 
 Then edit `.env` in the project root and add your keys. (Setup creates `.env` from `.env.example` if it doesn't exist.)
 
-**Windows (PowerShell, from repo root):**
+**Windows:**
 
 ```powershell
 git clone https://github.com/miaber/nonna-notes.git
@@ -45,7 +45,7 @@ Then edit `.env` in the project root and add your keys.
 
 ### 3. Run
 
-**macOS / Linux (one terminal):**
+**macOS / Linux:**
 
 ```bash
 ./scripts/run.sh
@@ -53,17 +53,7 @@ Then edit `.env` in the project root and add your keys.
 
 Then open **http://localhost:5173**, grant camera and microphone, and click **Start Cooking**. Press Ctrl+C to stop all services.
 
-**Windows (one terminal, from repo root):** `.\scripts\run.ps1` then open http://localhost:5173. Press Ctrl+C to stop. Or run manually in three terminals: backend (`cd backend`, `venv\Scripts\activate`, `uvicorn main:app --reload --port 8000`), recipe-agent (same with `recipe-agent`, port 8001), frontend (`cd frontend`, `npm run dev`).
-
-## Architecture
-
-```
-Browser (React + Vite)
-  ├─ WebSocket  →  Backend (FastAPI)  →  Gemini Live API
-  │                  (bidirectional audio + video streaming)
-  └─ HTTP POST  →  Recipe Agent (FastAPI)
-                     (URL/YouTube/image parsing via Gemini)
-```
+**Windows:** `.\scripts\run.ps1` then open http://localhost:5173. Press Ctrl+C to stop. Or run manually in three terminals: backend (`cd backend`, `venv\Scripts\activate`, `uvicorn main:app --reload --port 8000`), recipe-agent (same with `recipe-agent`, port 8001), frontend (`cd frontend`, `npm run dev`).
 
 | Service | Port | Purpose |
 |---|---|---|
