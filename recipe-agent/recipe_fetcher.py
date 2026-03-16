@@ -81,14 +81,21 @@ async def _fetch_transcript_via_dev_api(video_id: str, api_key: str) -> str | No
                 json={"video": video_id, "language": "en"},
             )
             if r.status_code != 200:
+                try:
+                    err_body = r.text[:500] if r.text else ""
+                    print(f"[recipe_fetcher] youtubetranscript.dev {r.status_code}: {err_body}", flush=True)
+                except Exception:
+                    print(f"[recipe_fetcher] youtubetranscript.dev {r.status_code}", flush=True)
                 return None
             data = r.json()
             if data.get("status") != "completed" or not data.get("data"):
+                print(f"[recipe_fetcher] youtubetranscript.dev status={data.get('status')} data={bool(data.get('data'))}", flush=True)
                 return None
             transcript = data["data"].get("transcript") or {}
             text = (transcript.get("text") or "").strip()
             return text if text else None
-    except Exception:
+    except Exception as e:
+        print(f"[recipe_fetcher] youtubetranscript.dev error: {e}", flush=True)
         return None
 
 
@@ -370,11 +377,25 @@ async def fetch_recipe(url: str) -> tuple[str, list[str], dict[int, str], list[d
         dev_api_key = os.getenv("YOUTUBE_TRANSCRIPT_DEV_API_KEY", "").strip()
         if dev_api_key:
             transcript = await _fetch_transcript_via_dev_api(video_id, dev_api_key)
-        if transcript is None:
+            # On Cloud Run we never try youtube_transcript_api — YouTube returns 403 for datacenter IPs.
+            # If dev API failed, go straight to description fallback or raise.
+            if transcript is None and description:
+                print(f"[recipe_fetcher] youtubetranscript.dev failed, using video description for {video_id}", flush=True)
+                note = "Recipe from video description (no captions available)."
+                text = f"{note}\n\n# {title}\n\n{description}" if title else f"{note}\n\n{description}"
+                return text, images, {}, []
+            if transcript is None:
+                raise ValueError(
+                    "No transcript available for this video. Check YOUTUBE_TRANSCRIPT_DEV_API_KEY and youtubetranscript.dev quota."
+                ) from None
+        else:
+            print("[recipe_fetcher] YOUTUBE_TRANSCRIPT_DEV_API_KEY not set, trying youtube_transcript_api", flush=True)
             try:
                 transcript = await asyncio.to_thread(_fetch_youtube_transcript_sync, video_id)
             except Exception as e:
+                print(f"[recipe_fetcher] youtube_transcript_api failed: {e}", flush=True)
                 if description:
+                    print(f"[recipe_fetcher] falling back to video description for {video_id}", flush=True)
                     note = "Recipe from video description (no captions available)."
                     text = f"{note}\n\n# {title}\n\n{description}" if title else f"{note}\n\n{description}"
                     return text, images, {}, []

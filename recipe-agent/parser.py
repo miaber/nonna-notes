@@ -68,18 +68,13 @@ If the text is from a video transcript or description, extract ingredients and s
 Recipe text:
 {{recipe_text}}"""
 
-SEARCH_AND_PARSE_PROMPT = f"""Search the web for a recipe for "{{query}}" from a well-known cooking website (AllRecipes, BBC Good Food, Food Network, Serious Eats, Tasty, NYT Cooking, Epicurious, etc.).
+SEARCH_PROMPT = """Search the web for a recipe for "{query}" from a well-known cooking website (AllRecipes, BBC Good Food, Food Network, Serious Eats, Tasty, NYT Cooking, Epicurious, etc.).
 
-Read the actual recipe from the search results — copy the real ingredients and steps, do not use your own knowledge or make anything up.
+Copy the complete recipe from the search results — ingredients, amounts, and full step-by-step instructions. Do not use your own knowledge or make anything up.
 
-Return ONLY valid JSON matching this schema. No markdown fences, no explanation:
-{SCHEMA_DESCRIPTION}
+At the end, include the source URL on its own line prefixed with "SOURCE:" (e.g. SOURCE: https://www.seriouseats.com/...)
 
-Rules:
-- Copy ingredients and steps from the real recipe you found in search results
-- Prefer more, shorter steps — one main action per step
-- Set timer_seconds (integer) for any timed step (boiling, roasting, frying, resting, etc.)
-- Set visual_checkpoint: true when cook must assess doneness visually"""
+Format as plain text with clear sections for Ingredients and Instructions."""
 
 GENERATE_PROMPT = f"""Generate a complete, accurate recipe for "{{query}}" in the style of {{persona_hint}}.
 Return ONLY valid JSON matching this exact schema. No markdown fences, no explanation.
@@ -155,8 +150,8 @@ async def _match_content_images_to_steps(recipe: RecipeSchema, content_images: l
 
     import httpx
 
-    # Download images concurrently (cap at 12 to limit bandwidth/tokens)
-    candidates = content_images[:12]
+    # Download images concurrently (cap at 30 to limit bandwidth/tokens)
+    candidates = content_images[:30]
     image_parts = []
     image_descriptions = []
 
@@ -333,7 +328,7 @@ async def parse_recipe(input_text: str, persona: str = "nonna") -> tuple[RecipeS
             recipe.source_url = input_text.strip()
             recipe.source_images = images
             _apply_step_images(recipe, step_images)
-            if not step_images and content_images:
+            if content_images:
                 await _match_content_images_to_steps(recipe, content_images)
             try:
                 recipe_cache.set(cache_key, recipe.model_dump(), source)
@@ -356,20 +351,22 @@ async def parse_recipe(input_text: str, persona: str = "nonna") -> tuple[RecipeS
     if result:
         return result
 
-    print("[recipe-agent] grounding failed — generating from model knowledge", flush=True)
-    prompt = GENERATE_PROMPT.replace("{query}", input_text).replace("{persona_hint}", persona_hint)
-    return await _call_gemini(prompt, "generated")
+    raise ValueError(
+        "Couldn't find a recipe from the web for that. Try pasting a recipe URL, or a more specific search."
+    )
 
 
 async def _search_and_parse_recipe(query: str, source_url: str | None = None) -> tuple[RecipeSchema, str] | None:
     """
-    Single Gemini call with Google Search grounding: finds a real recipe on the web
-    and returns it as a parsed RecipeSchema. No URL fetching — Gemini reads the content
-    via grounding, bypassing 403s from scrapers.
+    Two-pass grounding approach:
+      1. Plain-text call with Google Search grounding → recipe text + source URLs
+         (grounding_chunks is only populated for plain text, not JSON output)
+      2. Parse the text into structured JSON via _call_gemini
 
-    Returns None if grounding fails or returns unusable content (caller falls back to generation).
+    Returns None if grounding fails or returns unusable content.
     """
-    prompt = SEARCH_AND_PARSE_PROMPT.replace("{query}", query)
+    # --- Pass 1: search + get plain text (grounding URLs only work without JSON mode) ---
+    prompt = SEARCH_PROMPT.replace("{query}", query)
     response = None
 
     for try_i in range(3):
@@ -378,7 +375,9 @@ async def _search_and_parse_recipe(query: str, source_url: str | None = None) ->
                 model=MODEL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    tools=[
+                        types.Tool(google_search=types.GoogleSearch())
+                    ],
                     thinking_config=types.ThinkingConfig(thinking_budget=0),
                 ),
             )
@@ -407,45 +406,126 @@ async def _search_and_parse_recipe(query: str, source_url: str | None = None) ->
         print("[recipe-agent] grounding returned empty response", flush=True)
         return None
 
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    print(f"[recipe-agent] grounding raw text ({len(raw)} chars): {raw[:200]}…", flush=True)
 
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        print("[recipe-agent] grounding response contained no JSON", flush=True)
-        return None
-
-    json_text = raw[start:end + 1]
-
-    try:
-        recipe = RecipeSchema.model_validate_json(json_text)
-    except Exception as e:
-        print(f"[recipe-agent] grounding JSON parse failed: {e} — raw: {json_text[:200]}", flush=True)
-        return None
-
-    source = "generated"
+    # --- Extract source URL from grounding metadata ---
     grounding_url = None
     try:
         cand = response.candidates[0] if response.candidates else None
         meta = getattr(cand, "grounding_metadata", None) if cand else None
         chunks = getattr(meta, "grounding_chunks", None) or []
+        print(f"[recipe-agent] grounding_chunks ({len(chunks)})", flush=True)
         urls = [getattr(getattr(ch, "web", None), "uri", None) for ch in chunks]
         urls = [u for u in urls if u]
         if urls:
-            source = "url"
-            raw_url = urls[0]
-            # Resolve Vertex AI Search redirect URLs to the actual recipe page
-            grounding_url = await _resolve_redirect(raw_url)
-            print(f"[recipe-agent] grounding found {len(urls)} source(s): {grounding_url}", flush=True)
+            grounding_url = await _resolve_redirect(urls[0])
+            print(f"[recipe-agent] grounding source: {grounding_url}", flush=True)
         else:
-            print(f"[recipe-agent] grounding returned no source URLs — meta={meta!r} chunks={chunks!r}", flush=True)
+            # Try search_entry_point HTML
+            raw_redirect = _extract_recipe_url_from_entry_point(meta) if meta else None
+            if raw_redirect:
+                grounding_url = await _resolve_redirect(raw_redirect)
+                print(f"[recipe-agent] grounding entry_point source: {grounding_url}", flush=True)
     except Exception as _ge:
         print(f"[recipe-agent] grounding metadata error: {_ge}", flush=True)
 
+    # Also check if model included a SOURCE: line in the text
+    if not grounding_url or "google.com" in (grounding_url or ""):
+        m = re.search(r"SOURCE:\s*(https?://\S+)", raw, re.I)
+        if m:
+            grounding_url = m.group(1).rstrip(".,)")
+            print(f"[recipe-agent] source from text: {grounding_url}", flush=True)
+
+    # --- Pass 2: parse the plain text into structured JSON ---
+    parse_prompt = PARSE_PROMPT.replace("{recipe_text}", raw)
+    try:
+        recipe, _ = await _call_gemini(parse_prompt, "url")
+    except Exception as e:
+        print(f"[recipe-agent] pass 2 parse failed: {e}", flush=True)
+        return None
+
+    source = "url" if grounding_url and "google.com" not in grounding_url else "generated"
     recipe.source_url = source_url or grounding_url
-    print(f"[recipe-agent] grounding recipe: '{recipe.name}' ({len(recipe.ingredients)} ingredients, {len(recipe.steps)} steps, source={source})", flush=True)
+
+    # --- Fetch images from the source page (if we have a real URL) ---
+    if recipe.source_url and "google.com" not in recipe.source_url:
+        try:
+            _, images, step_images, content_images = await fetch_recipe(recipe.source_url)
+            recipe.source_images = images
+            _apply_step_images(recipe, step_images)
+            if content_images:
+                await _match_content_images_to_steps(recipe, content_images)
+        except Exception as img_err:
+            print(f"[recipe-agent] image fetch from grounding URL failed: {img_err}", flush=True)
+
+    print(f"[recipe-agent] grounding recipe: '{recipe.name}' ({len(recipe.ingredients)} ingredients, {len(recipe.steps)} steps, source={source}, url={recipe.source_url})", flush=True)
     return recipe, source
+
+
+def _extract_recipe_url_from_entry_point(meta) -> str | None:
+    """Extract a recipe URL from search_entry_point rendered HTML.
+
+    Tries vertexaisearch redirect URLs first, then falls back to any
+    href pointing to a known recipe site.
+    """
+    try:
+        entry = getattr(meta, "search_entry_point", None)
+        if not entry:
+            return None
+        rendered = getattr(entry, "rendered_content", None) or ""
+        if not rendered:
+            return None
+        # Extract ALL hrefs from the rendered HTML
+        all_hrefs = re.findall(r'href=["\'](https?://[^"\']+)["\']', rendered)
+        print(f"[recipe-agent] search_entry_point hrefs: {all_hrefs}", flush=True)
+        # 1. Prefer direct recipe-site URLs (skip vertexaisearch redirects — they
+        #    resolve to google.com/search on the Gemini API)
+        for href in all_hrefs:
+            if _is_acceptable_recipe_url(href):
+                print(f"[recipe-agent] found direct recipe URL in entry_point: {href[:80]}", flush=True)
+                return href
+        # 2. Fall back to vertexaisearch redirect URLs
+        for href in all_hrefs:
+            if "vertexaisearch.cloud.google.com/grounding-api-redirect/" in href:
+                return href
+        return None
+    except Exception:
+        return None
+
+
+# Hosts that are not recipe pages — reject these when resolving grounding redirects
+_NON_RECIPE_HOSTS = frozenset(
+    h.lower()
+    for h in (
+        "google.com",
+        "www.google.com",
+        "vertexaisearch.cloud.google.com",
+        "accounts.google.com",
+        "support.google.com",
+        "www.bing.com",
+        "bing.com",
+        "duckduckgo.com",
+    )
+)
+
+
+def _is_acceptable_recipe_url(url: str) -> bool:
+    """True if the URL looks like a recipe page, not a search engine or redirect hub."""
+    if not url or not url.strip():
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url.strip())
+        host = (parsed.netloc or "").lower().lstrip("www.")
+        if not host:
+            return False
+        if host in _NON_RECIPE_HOSTS:
+            return False
+        if "google." in host or "google " in host:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 async def _resolve_redirect(url: str) -> str:

@@ -73,6 +73,13 @@ class ParseRequest(BaseModel):
     persona: str = "nonna"
 
 
+@app.get("/")
+@app.get("/health")
+async def health():
+    """Liveness/readiness for Cloud Run or load balancers. Use this instead of POST /parse for health checks."""
+    return JSONResponse(content={"status": "ok", "service": "mise-recipe-agent"})
+
+
 @app.get("/.well-known/agent.json")
 async def agent_card():
     return JSONResponse(content=AGENT_CARD)
