@@ -4,18 +4,15 @@ Real-time AI cooking companion powered by Gemini Live API. Nonna watches your ki
 
 ## Features
 
-- **Voice-guided cooking:** Nonna reads recipe steps aloud and waits for you to say "next"
-- **Recipe parsing:** Paste any recipe URL or YouTube cooking video and get a structured recipe
+- **Recipe parsing:** Paste any recipe URL, picture, or YouTube cooking video to get a structured recipe
+- **Voice-guided cooking:** Nonna reads recipe steps aloud
 - **Document mode:** Cook without a recipe and Nonna records steps and ingredients as you go
 - **Timers:** Hands-free timer management via voice
 - **Step photos:** Nonna prompts you to show your progress and captures photos
 - **My Recipes:** Save, browse, and re-cook your recipe library
 - **Background music:** Ask Nonna to play music while you cook
-- **Easter egg:** Tap the logo 5 times to unlock Gordon Ramsay mode
 
 ## Quick Start
-
-**Prerequisites:** Python 3.10+, Node.js 18+, and a modern browser (Chrome, Firefox, or Safari) for camera and microphone.
 
 ### 1. Get API keys
 
