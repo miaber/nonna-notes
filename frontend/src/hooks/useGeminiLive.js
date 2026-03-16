@@ -22,12 +22,15 @@ export function useGeminiLive() {
   const [ingredients, setIngredients] = useState([]); // { amount, name }[]
   const [structuredRecipe, setStructuredRecipe] = useState(null); // full RecipeSchema object
   const [liveSteps, setLiveSteps] = useState([]);     // document mode observed steps
+  const [draftName, setDraftName] = useState(null);   // document mode: recipe name set by set_draft_name
   const [recipeSearchStatus, setRecipeSearchStatus] = useState(null); // null | "searching" | { error: string }
   const [currentMusic, setCurrentMusic] = useState(null); // null | { query: string, videoId: string|null }
   const [isSpeaking, setIsSpeaking] = useState(false);   // true while Gemini audio is playing
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [musicVolume, setMusicVolume] = useState(35);     // 0-100, user/AI-controlled baseline
   const [capturedPhotos, setCapturedPhotos] = useState({}); // { [stepNumber]: ["data:image/jpeg;base64,...", ...] }
+  const [recipeSaved, setRecipeSaved] = useState(false);
+  const [recipeSavedId, setRecipeSavedId] = useState(null);
   const speakingRef = useRef(false);
   // Set to true when turn_complete arrives but audio is still playing.
   // The last buffer's "ended" callback reads this to clear isSpeaking.
@@ -76,7 +79,7 @@ export function useGeminiLive() {
   const videoIntervalRef = useRef(null);
   const workletNodeRef = useRef(null);
 
-  const startSession = useCallback(async (videoElement, recipe = "", persona = "nonna", recipeFromLibrary = null, resumeDraft = false, resumeDraftStartedAt = null, getToken = null) => {
+  const startSession = useCallback(async (videoElement, recipe = "", persona = "nonna", recipeFromLibrary = null, resumeDraft = false, resumeDraftStartedAt = null, getToken = null, recipeImageFiles = null, documentMode = false) => {
     if (isStartingRef.current) return; // prevent double-start from rapid clicks / StrictMode
     isStartingRef.current = true;
     // Tear down any previous session first to avoid 409 ALREADY_EXISTS
@@ -101,6 +104,11 @@ export function useGeminiLive() {
     setIngredients([]);
     setStructuredRecipe(null);
     setLiveSteps([]);
+    setDraftName(null);
+    setCapturedPhotos({});
+    setCurrentMusic(null);
+    setRecipeSaved(false);
+    setRecipeSavedId(null);
 
     const looksLikeUrl = /^(https?:\/\/|[\w-]+\.(com|org|net|io|co|me|app|dev)\b)/i.test(recipe.trim());
     if (looksLikeUrl && !/^https?:\/\//i.test(recipe.trim())) {
@@ -110,6 +118,21 @@ export function useGeminiLive() {
     let recipeData = null;
     if (recipeFromLibrary?.recipe) {
       recipeData = { recipe: recipeFromLibrary.recipe, source: recipeFromLibrary.source ?? "saved" };
+    } else if (recipeImageFiles?.length) {
+      setStatus("parsing_recipe");
+      try {
+        const form = new FormData();
+        for (const file of recipeImageFiles) form.append("images", file);
+        form.append("persona", persona);
+        const resp = await fetch(`${RECIPE_AGENT_URL}/parse-image`, {
+          method: "POST",
+          body: form,
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.recipe) recipeData = data;
+        }
+      } catch {}
     } else if (recipe.trim() && inputIsUrl) {
       setStatus("parsing_recipe");
       try {
@@ -173,6 +196,7 @@ export function useGeminiLive() {
         persona,
         resume_draft: resumeDraft,
         resume_draft_started_at: resumeDraftStartedAt ?? null,
+        document_mode: documentMode,
       }));
 
       workletNode.port.onmessage = (event) => {
@@ -248,6 +272,8 @@ export function useGeminiLive() {
         setTimers([]);
         setStructuredRecipe(null);
         setLiveSteps([]);
+        setDraftName(null);
+        setCapturedPhotos({});
         setRecipeSearchStatus(null);
         setCurrentMusic(null);
         speakingRef.current = false; setIsSpeaking(false);
@@ -306,6 +332,9 @@ export function useGeminiLive() {
       } else if (data.type === "draft_loaded") {
         setLiveSteps(data.steps || []);
         setIngredients((data.ingredients || []).map((i) => ({ amount: i.amount ?? "", item: i.item ?? "", prep: i.prep ?? "" })));
+        setDraftName(data.name ?? null);
+      } else if (data.type === "draft_name") {
+        setDraftName(data.name ?? null);
       } else if (data.type === "play_music") {
         setCurrentMusic({ query: data.query, videoId: data.videoId || null });
       } else if (data.type === "stop_music") {
@@ -350,6 +379,9 @@ export function useGeminiLive() {
             [data.step_number]: [...(prev[data.step_number] || []), src],
           }));
         }
+      } else if (data.type === "recipe_saved") {
+        setRecipeSaved(true);
+        if (data.id) setRecipeSavedId(data.id);
       } else if (data.type === "audio") {
         if (!videoShown) {
           videoShown = true;
@@ -409,7 +441,7 @@ export function useGeminiLive() {
         ...prev,
         {
           id: data.call_id,
-          label: args.label,
+          label: args.label || "Timer",
           duration: args.duration_seconds,
           startedAt: Date.now(),
         },
@@ -480,6 +512,13 @@ export function useGeminiLive() {
   }, []);
 
   const stopMusic = useCallback(() => setCurrentMusic(null), []);
+
+  const saveRecipe = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "save_recipe" }));
+      setRecipeSaved(true);
+    }
+  }, []);
 
   const stopPlayback = useCallback(() => {
     activeSourcesRef.current.forEach(s => { try { s.stop(0); } catch {} });
@@ -562,6 +601,7 @@ export function useGeminiLive() {
     structuredRecipe,
     updateRecipe: setStructuredRecipe,
     liveSteps,
+    draftName,
     recipeSearchStatus,
     currentMusic,
     isSpeaking,
@@ -574,6 +614,9 @@ export function useGeminiLive() {
     startTimer,
     dismissTimer,
     stopMusic,
+    saveRecipe,
+    recipeSaved,
+    recipeSavedId,
   };
 }
 

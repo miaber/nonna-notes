@@ -7,7 +7,7 @@
   border: 1px solid var(--border-dark);
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 20px rgba(61, 54, 48, 0.2);
+  box-shadow: 0 4px 20px rgba(58, 46, 38, 0.2);
   z-index: 200;
   transition: width 0.2s ease;
 }
@@ -57,7 +57,7 @@
 .music-min-btn:hover,
 .music-close-btn:hover {
   color: var(--text);
-  background: rgba(61, 54, 48, 0.1);
+  background: rgba(58, 46, 38, 0.1);
 }
 
 .music-frame {
@@ -87,4 +87,61 @@
 
 .music-fallback a:hover {
   text-decoration: underline;
+}
+
+/* Compact overlay mode (on video, bottom-left) */
+.music-player-compact {
+  position: static;
+  width: auto;
+  max-width: 85%;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+.music-player-compact .music-frame-hidden {
+  position: absolute;
+  left: -9999px;
+  width: 158px;
+  height: 158px;
+  pointer-events: none;
+  visibility: hidden;
+}
+.music-player-compact-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: rgba(58, 46, 38, 0.92);
+  border-radius: 8px;
+  border: 1px solid var(--border-dark);
+}
+.music-player-compact-bar .music-label {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.music-play-pause-btn {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.music-play-pause-btn:hover {
+  background: var(--accent-dim);
+}
+.music-player-compact-bar .music-close-btn {
+  color: rgba(255,255,255,0.8);
+  font-size: 14px;
+}
+.music-player-compact-bar .music-close-btn:hover {
+  color: #fff;
 }

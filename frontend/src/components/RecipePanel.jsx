@@ -51,8 +51,11 @@ export default function RecipePanel({ recipe, completedSteps, editable = false, 
     });
 
   const r = editing ? draft : recipe;
-  const { name, description, servings, total_time_minutes, ingredients, steps, tips, source_url, source_images } = r;
-  const hasAboutInfo = !editing && (description || servings || total_time_minutes || tips?.length > 0 || source_url || source_images?.length > 0);
+  const { name, description, servings, total_time_minutes, ingredients, steps, tips, source_url, source_images, notes } = r;
+  const placeholderDesc = "Steps and ingredients appear as you go.";
+  const hasRealDescription = description && description.trim() && description.trim() !== placeholderDesc;
+  const hasNotes = notes != null && String(notes).trim().length > 0;
+  const hasAboutInfo = !editing && (hasRealDescription || hasNotes || (servings != null && servings > 0) || (total_time_minutes != null && total_time_minutes > 0) || (tips?.length > 0) || source_url || (source_images?.length > 0));
 
   return (
     <div className="recipe-panel">
@@ -250,6 +253,12 @@ export default function RecipePanel({ recipe, completedSteps, editable = false, 
                 <ul>
                   {tips.map((tip, i) => <li key={i}>{tip}</li>)}
                 </ul>
+              </div>
+            )}
+            {hasNotes && (
+              <div className="about-popup-notes">
+                <h4>Notes</h4>
+                <p className="about-popup-desc">{notes}</p>
               </div>
             )}
           </div>

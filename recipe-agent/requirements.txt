@@ -1,9 +1,12 @@
 fastapi
 uvicorn[standard]
-google-genai>=1.0.0
+python-multipart
+google-genai==1.67.0
 python-dotenv
 pydantic
 httpx
 beautifulsoup4
 youtube-transcript-api
 firebase-admin
+pillow
+pillow-heif

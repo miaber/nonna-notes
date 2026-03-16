@@ -334,6 +334,7 @@ function RecipeDetailModal({ recipeId, entry, onClose, onUpdate, onDelete, onCoo
     ingredients,
     steps,
     tips,
+    notes: notes ?? "",
   };
 
   return (

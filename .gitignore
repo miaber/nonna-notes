@@ -31,6 +31,9 @@ firebase-debug.log
 
 # Internal docs
 DECISIONS.md
+LEARNINGS.md
+SUBMISSION.md
+DEPLOY.md
 
 # macOS
 .DS_Store

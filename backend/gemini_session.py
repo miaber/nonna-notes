@@ -242,6 +242,7 @@ COMMON_BASE = """\
 You are in a real-time voice session. The user hears you ONLY when you speak aloud.
 Keep responses SHORT — 1-2 sentences max. Never repeat yourself. Never say the same thing twice in different words. Greet the user only once at the start.
 TOOL CALLS ARE THE ONLY WAY ACTIONS HAPPEN. Never say you did something without calling the tool.
+HONESTY: If the user asks you to do something you have no tool for, say so honestly — e.g. "I can't do that, tesoro." NEVER pretend you did it, make up a result, or act as if it happened. You can only do what your tools allow.
 Prompt the user often to show you what they're doing on the current step so you can take a picture and give feedback — e.g. "Show Nonna what you have there, tesoro!" or "Let me see! Hold it up so I can take a picture." Wait until the user responds or you have a good view of the dish before taking the photo — do not capture blindly. When you do take a picture, say so aloud first (e.g. "I'm taking a picture!", "Let me get a picture of that!"), then call capture_step_photo, then give brief feedback (e.g. "Bellissimo! I got it."). Do this at least once per step and more often on longer steps. Never tell the user to adjust the camera in a demanding way.
 If the user asks to play music, call play_music(query). Stop: stop_music(). Volume: set_music_volume(volume 0–100).
 NEVER suggest playing music on your own. Only play music when the user explicitly asks for it. If they ask, lean toward Andrea Bocelli.
@@ -268,6 +269,7 @@ SPEAKING STYLE:
 • CRITICAL: NEVER speak and call a tool in the same response. Tool calls must be SILENT — send the tool call with NO speech attached. After the tool result returns, THEN you may speak.
 • After calling complete_step or jump_to_step, do NOT narrate what the tool did — just read the next step.
 • After calling set_timer, give a brief confirmation (e.g. "Timer set!" or "5 minutes on the clock, tesoro!").
+• When the user asks how much time is left or about timer status, call check_timers and tell them the remaining time conversationally.
 • When transitioning to the next step, say ONLY the new step instruction. Do NOT say "great job on step 3, now moving to step 4 where we..." — just read step 4.
 
 CAMERA / VIDEO:
@@ -292,7 +294,7 @@ When you comment on what you see through the camera, stay in character but hedge
 
 NONNA'S WORLD — sprinkle these naturally into your responses as seasoning. NEVER use them as a reason to speak out of turn, add extra sentences, or break the pacing rules. Each item below is a ONE-LINER you can weave into a response you're already giving — not a separate thing to say. If it doesn't fit naturally in your current response, skip it and wait for next time.
 • MEASURING: When a step involves olive oil, butter, onions, garlic, or bread — recommend measuring with the heart and adding extra.
-• FINISHING: When the last step is done, end with "Mangia! Mangia!"
+• FINISHING: Say "Mangia! Mangia!" ONLY when the entire recipe is complete (all steps done and user confirms they are finished). NEVER say it when a timer goes off, when a single step finishes, or during document mode — you do not know when the cook is done until they tell you.
 • VIBES: If the user is waiting or chatting, you can mention having a drink or tasting as you go.
 • SNACKS: If the user seems hungry or there's a lull, mention fresh fennel as a snack.
 • DEAN MARTIN: You love Dean Martin. Drop him into small talk naturally — how handsome he was, his movies. Do NOT recommend his music.
@@ -315,14 +317,14 @@ TOOLS = [
         function_declarations=[
             types.FunctionDeclaration(
                 name="set_timer",
-                description="Start a countdown timer. Recipe mode only. Call IMMEDIATELY when the user agrees to a timer (e.g. 'yes', 'sure', 'yeah', 'ok', 'go ahead', 'please') OR asks for one (e.g. 'set a timer', 'start the timer'). Do NOT wait for further confirmation — 'yes' to 'Want me to set a timer?' means call this tool NOW. Not for document mode.",
+                description="Start a countdown timer. Recipe mode only. Call IMMEDIATELY when the user agrees to a timer (e.g. 'yes', 'sure', 'yeah', 'ok', 'go ahead', 'please') OR asks for one (e.g. 'set a timer', 'start the timer'). Do NOT wait for further confirmation — 'yes' to 'Want me to set a timer?' means call this tool NOW. Not for document mode. Do NOT ask the user for a label — omit it if none was given.",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
-                        "label": types.Schema(type="STRING"),
+                        "label": types.Schema(type="STRING", description="Optional short label (e.g. 'Pasta', 'Sauce'). Omit if the user didn't name the timer."),
                         "duration_seconds": types.Schema(type="INTEGER"),
                     },
-                    required=["label", "duration_seconds"],
+                    required=["duration_seconds"],
                 ),
             ),
             types.FunctionDeclaration(
@@ -347,6 +349,11 @@ TOOLS = [
                     },
                     required=["label", "new_duration_seconds"],
                 ),
+            ),
+            types.FunctionDeclaration(
+                name="check_timers",
+                description="Check the status of all active timers. Call when the user asks how much time is left, timer status, or anything about running timers. Returns each timer's label and remaining seconds.",
+                parameters=types.Schema(type="OBJECT", properties={}),
             ),
             types.FunctionDeclaration(
                 name="start_stopwatch",
@@ -482,11 +489,11 @@ TOOLS = [
             ),
             types.FunctionDeclaration(
                 name="capture_step_photo",
-                description="Save a photo from the camera. Only call when the user has shown you the dish (e.g. after you asked to see it) or you have a clear view — wait for their response or a good view; do not capture right after asking. Before calling, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'). Then call this tool, then give brief feedback. Also call when user explicitly asks to take a photo (say you're taking it first). Use step_number for the current step when in recipe mode; omit for on-demand shots. Skip if only a recipe name exists (no steps yet).",
+                description="Save a photo from the camera. Only call when the user has shown you the dish (e.g. after you asked to see it) or you have a clear view — wait for their response or a good view; do not capture right after asking. Before calling, say aloud that you're taking a picture (e.g. 'I'm taking a picture!'). Then call this tool, then give brief feedback. In document mode you MUST pass step_number (1-based) — the step this photo belongs to (e.g. the step you just added, or the step they're showing you). If you omit step_number in document mode, all photos will appear under the same step. Recipe mode: pass step_number for the current step; omit only for general on-demand shots. Skip if only a recipe name exists (no steps yet).",
                 parameters=types.Schema(
                     type="OBJECT",
                     properties={
-                        "step_number": types.Schema(type="INTEGER", description="Optional. Recipe step number (1-based) when this photo is for a specific step; omit for general on-demand photos."),
+                        "step_number": types.Schema(type="INTEGER", description="Required in document mode (1-based step this photo belongs to). Optional in recipe mode. In document mode use the step you just added or the step the user is showing you."),
                     },
                     required=[],
                 ),
@@ -550,7 +557,7 @@ TOOLS = [
 ]
 
 
-def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bool = False) -> str:
+def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bool = False, recipe_finding_mode: bool = False) -> str:
     p = PERSONAS.get(persona, PERSONAS["nonna"])
     parts = [p["base"]]
 
@@ -590,6 +597,13 @@ def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bo
             parts.append(f"\n--- RECIPE (from user's saved library — already saved, do NOT offer to save again) ---\n{recipe_text}\n--- END RECIPE ---")
         else:
             parts.append(f"\n--- RECIPE ---\n{recipe_text}\n--- END RECIPE ---")
+    elif recipe_finding_mode:
+        parts.append(
+            "\nNo recipe is loaded yet. You are in RECIPE MODE — the user wants to follow a recipe."
+            "\n• Do NOT ask if they want to document. Do NOT offer document mode. Do NOT ask 'are you following a recipe or documenting?'"
+            "\n• Call fetch_recipe as soon as you know the dish name. Never recite a recipe yourself."
+            "\n• Once the recipe loads, greet the user and guide them through it step by step."
+        )
     else:
         parts.append(
             "\nNo recipe is loaded. You are in one of two mutually exclusive modes — determine which from the user's words:"
@@ -612,8 +626,9 @@ def _build_system_prompt(persona: str, recipe_text: str | None, from_library: bo
             "\n• CORRECTING STEPS: When the user says a step was wrong, didn't happen, or needs changing: ALWAYS use delete_live_step or edit_live_step immediately — do NOT just add a new step on top of the wrong one. edit_live_step is preferred when the instruction only needs minor correction. delete_live_step is for steps that simply should not have been recorded. Step numbers are shown on screen (1-based). If the user says 'that last step was wrong', the step to fix is step number equal to the current count."
             "\n• INSERTING STEPS: To add a step between existing ones, call add_live_step with position=N to insert at position N (pushes existing steps down). Omit position to append at the end."
             "\n• TOOL FIRST: For both ingredients and steps, call the tool BEFORE or DURING the same spoken turn. Never describe an action you are taking without the tool call happening in the same response."
-            "\n• NAMES: When they name the recipe, call set_draft_name."
-            "\n• PHOTOS: Often prompt the user to show you what they're doing so you can take a picture and give feedback (e.g. 'Show me what you have!', 'Let Nonna see!'). Wait until they respond or you have a good view before capturing. When you do take a picture, say aloud that you're taking it (e.g. 'I'm taking a picture!'), then call capture_step_photo, then give brief feedback. Do this at key moments — after prep, mid-cook, plating — and whenever a state is worth remembering. Only use step_number values that exist in the current recipe."
+            "\n• NAMES: When they name the recipe, call set_draft_name. After calling set_draft_name you MUST immediately prompt them for the next thing — e.g. 'Bellissimo! What ingredients are you using?' or 'What are you doing first?' Do not stop after naming; always ask for ingredients or the first step in the same turn or right after."
+            "\n• PHOTOS + STEPS TOGETHER: When you prompt the user to show you what they're doing and they show you, you MUST do BOTH: (1) call add_live_step to record what they did, AND (2) call capture_step_photo to save the picture. Always pass step_number to capture_step_photo (1-based) — use the step you just added (same as total_steps after add_live_step) or the step they are showing you. If you omit step_number, all photos will appear under one step. Call both tools in the same turn, then speak feedback. Do this at key moments — after prep, mid-cook, plating."
+            "\n• CONFIRM AFTER EACH STEP: After every add_live_step call you MUST say one short sentence confirming the step was recorded (e.g. 'Step 2 recorded!', 'Got it, I wrote that down.', 'Bene! I have that.'). Never stay silent after recording a step — the user needs to hear that you got it."
             "\n• TIMERS: NEVER call set_timer in document mode. If the user mentions a duration ('boil for 5 minutes'), record it in add_live_step via timer_seconds. Do not start an actual countdown — just document the time."
             "\n• FINISH: When done, call finalize_live_recipe(name) ONCE."
         )
@@ -675,6 +690,7 @@ class GeminiSession:
         self._completed_step_ids: set[int] = set()  # step IDs marked complete during this session
         self._last_step_completed_at: float = 0  # timestamp of last complete_step call
         self._turns_at_last_step: int = 0  # turn count when last complete_step was called
+        self._active_timers: list[dict] = []  # [{"label": str, "duration": int, "started_at": float}]
 
     def _get_step_text(self, step_number: int) -> str | None:
         """Look up a step's instruction text by 1-based step number."""
@@ -683,6 +699,15 @@ class GeminiSession:
         for s in self.current_recipe.get("steps", []):
             if s.get("id") == step_number:
                 return s.get("instruction")
+        return None
+
+    def _get_step_timer(self, step_number: int) -> int | None:
+        """Look up a step's timer_seconds by 1-based step number."""
+        if not self.current_recipe:
+            return None
+        for s in self.current_recipe.get("steps", []):
+            if s.get("id") == step_number:
+                return s.get("timer_seconds")
         return None
 
     async def run(self, websocket):
@@ -699,7 +724,9 @@ class GeminiSession:
         if recipe_text:
             print(f"[nonna] recipe: {len(recipe_text)} chars", flush=True)
 
-        system_prompt = _build_system_prompt(persona, recipe_text, from_library=self._recipe_already_in_library)
+        _recipe_hint = (config_msg.get("recipe_hint") or "").strip()
+        _document_mode = config_msg.get("document_mode", False)
+        system_prompt = _build_system_prompt(persona, recipe_text, from_library=self._recipe_already_in_library, recipe_finding_mode=bool(_recipe_hint and not _document_mode and not recipe_text))
         print(f"[nonna] system prompt: {len(system_prompt)} chars", flush=True)
 
         live_config = types.LiveConnectConfig(
@@ -717,12 +744,10 @@ class GeminiSession:
             realtime_input_config=types.RealtimeInputConfig(
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
                 automatic_activity_detection=types.AutomaticActivityDetection(
-                    # High start sensitivity: pick up speech easily.
-                    # High end sensitivity: stop listening quickly once user stops talking.
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=500,
-                    prefix_padding_ms=200,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    silence_duration_ms=1000,
+                    prefix_padding_ms=300,
                 ),
             ),
             context_window_compression=types.ContextWindowCompressionConfig(
@@ -807,8 +832,19 @@ class GeminiSession:
                         trigger = "The recipe is already displayed on screen. Greet the user and check if they're ready to begin. Do NOT start reading steps yet — wait until they confirm they are ready."
                     else:
                         recipe_hint = config_msg.get("recipe_hint", "").strip()
-                        if recipe_hint:
-                            trigger = f'The user said they want to make something like "{recipe_hint}" but no recipe is loaded. Greet them and ask whatever clarifying questions you need to find the right version. Do NOT call fetch_recipe yet — wait for their answers first.'
+                        is_document_mode = config_msg.get("document_mode", False)
+                        if is_document_mode:
+                            self.document_mode_started_at = time.time()
+                            if self._draft_key is None:
+                                self._draft_key = self.document_mode_started_at
+                            trigger = (
+                                "You are in DOCUMENT MODE. The user chose 'Record a Recipe' — they want you to watch them cook and document everything. "
+                                "Do NOT call fetch_recipe. Do NOT ask if they want to follow a recipe. "
+                                "Greet them warmly, then ask what they're making today (so you can call set_draft_name) and what ingredients they have. "
+                                "Start documenting immediately as they tell you things — call add_live_ingredient and add_live_step as they mention them."
+                            )
+                        elif recipe_hint:
+                            trigger = f'The user wants to follow a recipe for "{recipe_hint}". This is RECIPE MODE — do NOT ask if they want to document. If the dish is specific enough, call fetch_recipe immediately. If it is too vague, ask one clarifying question first — then call fetch_recipe once you have enough to go on.'
                         else:
                             trigger = "No recipe is loaded. Greet the user briefly and ask what they'd like to cook. Once they name a dish, ask whatever you need to know to find the right recipe — then call fetch_recipe. Never recite a recipe yourself."
                     await session.send_realtime_input(text=trigger)
@@ -902,6 +938,25 @@ class GeminiSession:
                     )
                 elif t == "text":
                     await session.send_realtime_input(text=data.get("text", ""))
+                elif t == "save_recipe":
+                    if self.current_recipe and not self._recipe_already_in_library:
+                        name = self.current_recipe.get("name", "Recipe")
+                        draft_id = str(self._draft_key or self.document_mode_started_at or "")
+                        if self._saved_recipe_name_this_session != name:
+                            entry = {
+                                "saved_at": datetime.now(timezone.utc).isoformat(),
+                                "recipe": self.current_recipe,
+                                "photos": self.step_photos or [],
+                                "draft": False,
+                            }
+                            if draft_id:
+                                entry["id"] = draft_id
+                            result = storage.save_entry(self.user_id, entry)
+                            saved_id = (result or {}).get("id") or draft_id or name
+                            self._saved_recipe_name_this_session = name
+                        else:
+                            saved_id = draft_id or name
+                        await _safe_send(websocket, json.dumps({"type": "recipe_saved", "id": saved_id}))
                 elif t == "stopwatch_elapsed":
                     sec = data.get("seconds")
                     if isinstance(sec, (int, float)) and self.live_steps and sec > 0:
@@ -940,6 +995,7 @@ class GeminiSession:
         pending_turn_complete = False  # True after turn_complete until we use sent_text_this_turn for tool_call or next turn
         transcript_buffer_this_turn: list[str] = []  # accumulate all chunks; send full text on turn_complete
         spoke_in_this_response = False  # True only if we saw transcript in this same response (not a previous turn)
+        _model_spoke_this_turn = False  # True if model generated speech in current turn (persists across responses)
         # Post-step-tool speech budget: limits model to exactly 1 reading of
         # the step after jump_to_step / complete_step, preventing multi-turn
         # repeats regardless of how Gemini chains its responses.
@@ -958,6 +1014,7 @@ class GeminiSession:
                     if suppress_until_turn_complete:
                         suppress_until_turn_complete = False
                     _step_speech_budget = None
+                    _model_spoke_this_turn = False
                     audio_count = 0
                     sent_transcription_this_turn = False
                     transcript_buffer_this_turn.clear()
@@ -986,6 +1043,7 @@ class GeminiSession:
                         sent_transcription_this_turn = True
                         sent_text_this_turn.add(txt)
                         spoke_in_this_response = True
+                        _model_spoke_this_turn = True
                         transcript_buffer_this_turn.append(txt)
                         await websocket.send_text(json.dumps({"type": "transcript", "text": txt}))
 
@@ -1000,6 +1058,7 @@ class GeminiSession:
                             if txt and txt not in sent_text_this_turn:
                                 sent_text_this_turn.add(txt)
                                 spoke_in_this_response = True
+                                _model_spoke_this_turn = True
                                 transcript_buffer_this_turn.append(txt)
                                 await websocket.send_text(json.dumps({"type": "transcript", "text": txt}))
 
@@ -1024,6 +1083,7 @@ class GeminiSession:
                     pending_turn_complete = True
                     if not response.tool_call:
                         seen_tool_calls.clear()
+                        _model_spoke_this_turn = False
                     await websocket.send_text(json.dumps({"type": "turn_complete"}))
 
                 # Tool calls — collect all responses and send as a batch
@@ -1035,7 +1095,13 @@ class GeminiSession:
                         await websocket.send_text(json.dumps({"type": "turn_complete"}))
                         sent_transcription_this_turn = False
                     tool_responses = []
-                    for fc in response.tool_call.function_calls:
+                    # Process add_live_step before capture_step_photo so step
+                    # count is correct when the photo's step_number is inferred.
+                    _fcs = sorted(
+                        response.tool_call.function_calls,
+                        key=lambda f: (0 if f.name in ("add_live_step", "add_live_ingredient") else 1 if f.name == "capture_step_photo" else 0),
+                    )
+                    for fc in _fcs:
                         args = _deep_convert(fc.args) if fc.args else {}
                         dedup_key = (fc.name, json.dumps(args, sort_keys=True))
                         if dedup_key in seen_tool_calls:
@@ -1105,6 +1171,8 @@ class GeminiSession:
                         elif fc.name == "start_stopwatch":
                             if self.document_mode_started_at is None:
                                 self.document_mode_started_at = time.time()
+                                if self._draft_key is None:
+                                    self._draft_key = self.document_mode_started_at
                             self.active_stopwatch_label = args.get("label", "Step")
                             # fall through to send tool_call to frontend
 
@@ -1113,21 +1181,39 @@ class GeminiSession:
                             if self.draft_name:
                                 if self.document_mode_started_at is None:
                                     self.document_mode_started_at = time.time()
+                                    if self._draft_key is None:
+                                        self._draft_key = self.document_mode_started_at
                                 _acc = self.draft_accumulated_seconds + (time.time() - self.document_mode_started_at if self.document_mode_started_at else 0)
                                 _write_draft(self.live_steps, self.live_ingredients, name=self.draft_name, started_at=self._draft_key or self.document_mode_started_at, photos=self.step_photos, accumulated_seconds=_acc, user_id=self.user_id)
-                            tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
+                                await websocket.send_text(json.dumps({"type": "draft_name", "name": self.draft_name}))
+                            tool_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                response={
+                                    "result": "ok",
+                                    "reminder": "The name is now set. Immediately prompt the user for ingredients or the first step — e.g. 'What ingredients are you using?' or 'What are you doing first?' Do not stop after naming.",
+                                },
+                                id=fc.id,
+                            ))
                             continue
 
                         elif fc.name == "add_live_step":
                             if self.document_mode_started_at is None:
                                 self.document_mode_started_at = time.time()
+                                if self._draft_key is None:
+                                    self._draft_key = self.document_mode_started_at
                             step_args = dict(args)
                             if step_args.get("timer_seconds") is not None and step_args["timer_seconds"] <= 0:
                                 del step_args["timer_seconds"]
                             # Deduplicate: skip if instruction is identical to the last recorded step
                             _instr = (step_args.get("instruction") or "").strip().lower()
                             if self.live_steps and (self.live_steps[-1].get("instruction") or "").strip().lower() == _instr:
-                                tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
+                                step_summary = [f"{j+1}. {s.get('instruction','')}" for j, s in enumerate(self.live_steps)]
+                                tool_responses.append(types.FunctionResponse(name=fc.name, response={
+                                    "result": "ok",
+                                    "note": "duplicate_skipped",
+                                    "total_steps": len(self.live_steps),
+                                    "all_steps": step_summary,
+                                }, id=fc.id))
                                 continue
                             position = step_args.pop("position", None)
                             if position is not None and 1 <= int(position) <= len(self.live_steps):
@@ -1143,7 +1229,14 @@ class GeminiSession:
                                 "step": step_args,
                                 "position": insert_at,
                             }))
-                            tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
+                            step_summary = [f"{j+1}. {s.get('instruction','')}" for j, s in enumerate(self.live_steps)]
+                            tool_responses.append(types.FunctionResponse(name=fc.name, response={
+                                "result": "ok",
+                                "step_number": insert_at,
+                                "total_steps": len(self.live_steps),
+                                "all_steps": step_summary,
+                                "reminder": f"Say aloud that you recorded this step (e.g. 'Step {insert_at} recorded!' or 'Got it!').",
+                            }, id=fc.id))
                             continue
 
                         elif fc.name == "delete_live_step":
@@ -1156,7 +1249,12 @@ class GeminiSession:
                                     "type": "delete_live_step",
                                     "step_number": step_num,
                                 }))
-                            tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
+                            step_summary = [f"{j+1}. {s.get('instruction','')}" for j, s in enumerate(self.live_steps)]
+                            tool_responses.append(types.FunctionResponse(name=fc.name, response={
+                                "result": "ok",
+                                "total_steps": len(self.live_steps),
+                                "all_steps": step_summary,
+                            }, id=fc.id))
                             continue
 
                         elif fc.name == "edit_live_step":
@@ -1174,10 +1272,20 @@ class GeminiSession:
                                     "step_number": step_num,
                                     "step": updated,
                                 }))
-                            tool_responses.append(types.FunctionResponse(name=fc.name, response={"result": "ok"}, id=fc.id))
+                            step_summary = [f"{j+1}. {s.get('instruction','')}" for j, s in enumerate(self.live_steps)]
+                            tool_responses.append(types.FunctionResponse(name=fc.name, response={
+                                "result": "ok",
+                                "step_number": step_num,
+                                "total_steps": len(self.live_steps),
+                                "all_steps": step_summary,
+                            }, id=fc.id))
                             continue
 
                         elif fc.name == "add_live_ingredient":
+                            if self.document_mode_started_at is None:
+                                self.document_mode_started_at = time.time()
+                                if self._draft_key is None:
+                                    self._draft_key = self.document_mode_started_at
                             ing = {
                                 "amount": (args.get("amount") or "").strip(),
                                 "item": (args.get("item") or "").strip(),
@@ -1339,7 +1447,14 @@ class GeminiSession:
                             continue
 
                         elif fc.name == "capture_step_photo":
-                            step_num = args.get("step_number")  # optional: null for on-demand photos
+                            step_num = args.get("step_number")
+                            if step_num is None:
+                                in_doc = self.document_mode_started_at is not None or self.live_steps or self.live_ingredients
+                                if in_doc:
+                                    step_num = max(1, len(self.live_steps))
+                                elif self.current_recipe:
+                                    completed = sorted(self._completed_step_ids)
+                                    step_num = (completed[-1] if completed else 1) if self.current_recipe.get("steps") else 1
                             if self.last_video_frame:
                                 self.step_photos.append({"step_id": step_num, "data": self.last_video_frame})
                                 self.last_video_frame = None  # free memory; next frame will overwrite when needed
@@ -1365,6 +1480,33 @@ class GeminiSession:
                                     id=fc.id,
                                 ))
                             continue
+
+                        if fc.name == "check_timers":
+                            now = time.time()
+                            self._active_timers = [t for t in self._active_timers if now - t["started_at"] < t["duration"]]
+                            if not self._active_timers:
+                                tool_responses.append(types.FunctionResponse(name=fc.name, response={"timers": [], "summary": "No active timers."}, id=fc.id))
+                            else:
+                                timer_info = []
+                                for t in self._active_timers:
+                                    remaining = max(0, t["duration"] - int(now - t["started_at"]))
+                                    mins, secs = divmod(remaining, 60)
+                                    timer_info.append({"label": t["label"], "remaining_seconds": remaining, "display": f"{mins}m {secs}s" if mins else f"{secs}s"})
+                                tool_responses.append(types.FunctionResponse(name=fc.name, response={"timers": timer_info}, id=fc.id))
+                            continue
+
+                        if fc.name == "set_timer":
+                            self._active_timers.append({"label": args.get("label", "Timer"), "duration": args.get("duration_seconds", 0), "started_at": time.time()})
+                        elif fc.name == "cancel_timer":
+                            cancel_label = (args.get("label") or "").lower()
+                            self._active_timers = [t for t in self._active_timers if t["label"].lower() != cancel_label]
+                        elif fc.name == "edit_timer":
+                            edit_label = (args.get("label") or "").lower()
+                            for t in self._active_timers:
+                                if t["label"].lower() == edit_label:
+                                    t["duration"] = args.get("new_duration_seconds", t["duration"])
+                                    t["started_at"] = time.time()
+                                    break
 
                         if fc.name == "complete_step":
                             now = time.time()
@@ -1411,11 +1553,17 @@ class GeminiSession:
                                 id=fc.id,
                             ))
                         elif fc.name == "jump_to_step":
-                            step_text = self._get_step_text(int(args.get("step_number", 0)))
-                            if step_text:
-                                msg = f"Jumped to step {args.get('step_number')}. Read it aloud: \"{step_text}\" — say it ONCE, then stop."
+                            step_num = int(args.get("step_number", 0))
+                            step_text = self._get_step_text(step_num)
+                            step_timer = self._get_step_timer(step_num)
+                            if step_text and step_timer:
+                                msg = f"Jumped to step {step_num}. In ONE response: read it aloud (\"{step_text}\") then immediately ask 'Want me to set a timer?' — do not stop between them."
+                            elif step_text:
+                                msg = f"Jumped to step {step_num}. Read it aloud: \"{step_text}\" — say it ONCE, then stop."
+                            elif step_timer:
+                                msg = f"Jumped to step {step_num}. Read it aloud, then immediately ask 'Want me to set a timer?' in the same response."
                             else:
-                                msg = f"Jumped to step {args.get('step_number')}. Read it aloud ONCE, then stop."
+                                msg = f"Jumped to step {step_num}. Read it aloud ONCE, then stop."
                             tool_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 response={"result": msg},
@@ -1432,9 +1580,7 @@ class GeminiSession:
                         fc2.name in ("complete_step", "jump_to_step")
                         for fc2 in response.tool_call.function_calls
                     )
-                    model_already_spoke = spoke_in_this_response or (
-                        step_tools and bool(sent_text_this_turn)
-                    )
+                    model_already_spoke = spoke_in_this_response or _model_spoke_this_turn or bool(sent_text_this_turn)
 
                     # SILENT scheduling on non-step tools prevents the
                     # model from generating speech about the tool result
@@ -1452,11 +1598,22 @@ class GeminiSession:
                         suppress_until_turn_complete = True
                     if step_tools:
                         # Clear suppress so the model can read the new step.
-                        # Budget=1 allows exactly one turn of speech (the step
-                        # reading + timer offer), then blocks repeats.
                         suppress_until_turn_complete = False
-                        _step_speech_budget = 1
-                        _step_guard_expires = time.time() + 4
+                        if model_already_spoke:
+                            # Model already spoke in this turn (before the tool call),
+                            # so the step was likely already read. Block post-tool
+                            # speech to prevent it being read a second time.
+                            _step_speech_budget = 0
+                        else:
+                            # Budget: 2 if the step has a timer (step read + timer question
+                            # may come in separate turns), 1 otherwise.
+                            _jumped_timer = any(
+                                self._get_step_timer(int(fc2.args.get("step_number", 0)))
+                                for fc2 in response.tool_call.function_calls
+                                if fc2.name == "jump_to_step" and fc2.args
+                            )
+                            _step_speech_budget = 2 if _jumped_timer else 1
+                        _step_guard_expires = time.time() + 6
                     elif _step_speech_budget is None:
                         # Only clear budget if no step guard is active —
                         # a non-step tool (e.g. set_timer) called right
@@ -1465,6 +1622,7 @@ class GeminiSession:
                     sent_text_this_turn.clear()
                     seen_tool_calls.clear()
                     pending_turn_complete = False
+                    _model_spoke_this_turn = False
             except Exception as e:
                 if "websocket.close" not in str(e) and "websocket.send" not in str(e):
                     print(f"[nonna] send error: {e}", flush=True)
@@ -1479,18 +1637,37 @@ class GeminiSession:
 
         parts.append("\nYou are continuing an ongoing cooking session. The user does NOT know there was any interruption "
                       "and must NOT find out. Do NOT say 'I'm back', 'sorry about that', 'where were we', or acknowledge "
-                      "any disconnect in any way. Just seamlessly continue as if nothing happened.")
+                      "any disconnect in any way. Do NOT greet them again. Do NOT ask what they want to cook. "
+                      "Just seamlessly continue as if nothing happened — wait silently for the user to speak.")
 
-        if recipe_text:
+        in_document_mode = self.document_mode_started_at is not None or self.live_steps or self.live_ingredients
+
+        if in_document_mode:
+            parts.append("\n=== YOU ARE IN DOCUMENT MODE === "
+                         "You are documenting the user's recipe as they cook. Do NOT call fetch_recipe. "
+                         "Only use add_live_step, add_live_ingredient, edit_live_step, delete_live_step, "
+                         "set_draft_name, capture_step_photo, finalize_live_recipe.")
+            if self.draft_name:
+                parts.append(f"\nRecipe name: {self.draft_name}")
+            if self.live_ingredients:
+                ing_strs = [f"{i.get('amount', '')} {i.get('item', '')}".strip() or i.get("item", "") for i in self.live_ingredients]
+                parts.append(f"\nIngredients recorded so far: {'; '.join(ing_strs)}")
+            if self.live_steps:
+                step_strs = [f"  {j+1}. {s.get('instruction', '')}" for j, s in enumerate(self.live_steps)]
+                parts.append(f"\nSteps recorded so far:\n" + "\n".join(step_strs))
+            parts.append("\nDo NOT re-add these ingredients or steps. Only add NEW ones the user mentions going forward.")
+        elif recipe_text:
             parts.append(f"\n--- RECIPE (already displayed on user's screen) ---\n{recipe_text}\n--- END RECIPE ---")
 
-        if self._completed_step_ids:
-            sorted_ids = sorted(self._completed_step_ids)
-            parts.append(f"\nSteps already completed: {', '.join(str(s) for s in sorted_ids)}.")
-            next_step = max(sorted_ids) + 1
-            parts.append(f"The user is currently working on step {next_step}. Wait for them to say 'done' or 'next' before advancing.")
+            if self._completed_step_ids:
+                sorted_ids = sorted(self._completed_step_ids)
+                parts.append(f"\nSteps already completed: {', '.join(str(s) for s in sorted_ids)}.")
+                next_step = max(sorted_ids) + 1
+                parts.append(f"The user is currently working on step {next_step}. Wait for them to say 'done' or 'next' before advancing.")
+            else:
+                parts.append("\nNo steps completed yet. Wait for the user to tell you they are ready or to say 'done'/'next'.")
         else:
-            parts.append("\nNo steps completed yet.")
+            parts.append("\nNo recipe is loaded and no documenting has started. Wait for the user to speak — they will tell you what they want to do.")
 
         recent = self._transcript_log[-20:]
         if recent:
@@ -1500,8 +1677,18 @@ class GeminiSession:
                 convo_lines.append(f"  {prefix}: {entry['text'][:200]}")
             parts.append("\nRecent conversation for context:\n" + "\n".join(convo_lines))
 
-        parts.append("\nContinue seamlessly. If you were mid-step, stay on that step and wait for the user. "
-                      "Do NOT re-read the current step unless the user asks. Do NOT re-read completed steps.")
+        now = time.time()
+        live_timers = [t for t in self._active_timers if now - t["started_at"] < t["duration"]]
+        if live_timers:
+            timer_lines = []
+            for t in live_timers:
+                remaining = max(0, t["duration"] - int(now - t["started_at"]))
+                mins, secs = divmod(remaining, 60)
+                timer_lines.append(f"  - {t['label']}: ~{mins}m {secs}s remaining")
+            parts.append("\nActive timers:\n" + "\n".join(timer_lines))
+
+        parts.append("\nCRITICAL: Say NOTHING proactively. Do NOT greet, do NOT ask questions, do NOT summarize. "
+                      "Wait in silence for the user to speak first, then respond naturally.")
         return "\n".join(parts)
 
     async def close(self):

@@ -3,8 +3,9 @@ import "./MusicPlayer.css";
 
 const DUCK_VOLUME = 12;
 
-export default function MusicPlayer({ query, videoId, volume = 75, isSpeaking, onStop }) {
-  const [minimized, setMinimized] = useState(false);
+export default function MusicPlayer({ query, videoId, volume = 75, isSpeaking, onStop, compact = false }) {
+  const [minimized, setMinimized] = useState(!compact);
+  const [isPaused, setIsPaused] = useState(false);
   const playerRef = useRef(null);
   const containerRef = useRef(null);
   // Keep a ref so the ducking effect always sees the latest baseline volume
@@ -61,6 +62,47 @@ export default function MusicPlayer({ query, videoId, volume = 75, isSpeaking, o
   }, [isSpeaking, volume]);
 
   const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+
+  const togglePlayPause = () => {
+    const player = playerRef.current;
+    if (!player?.getPlayerState) return;
+    try {
+      const state = player.getPlayerState?.();
+      if (state === 1) {
+        player.pauseVideo?.();
+        setIsPaused(true);
+      } else {
+        player.playVideo?.();
+        setIsPaused(false);
+      }
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    if (!playerRef.current?.getPlayerState) return;
+    const interval = setInterval(() => {
+      try {
+        const state = playerRef.current?.getPlayerState?.();
+        setIsPaused(state !== 1 && state !== 3);
+      } catch (_) {}
+    }, 500);
+    return () => clearInterval(interval);
+  }, [videoId]);
+
+  if (compact) {
+    return (
+      <div className="music-player music-player-compact">
+        <div className="music-player-compact-bar">
+          <button type="button" className="music-play-pause-btn" onClick={togglePlayPause} title={isPaused ? "Play" : "Pause"} aria-label={isPaused ? "Play" : "Pause"}>
+            {isPaused ? "▶" : "⏸"}
+          </button>
+          <span className="music-label" title={query}>{query}</span>
+          <button type="button" className="music-close-btn" onClick={onStop} title="Stop music">✕</button>
+        </div>
+        {videoId && <div ref={containerRef} className="music-frame-container music-frame-hidden" aria-hidden="true" />}
+      </div>
+    );
+  }
 
   return (
     <div className={`music-player ${minimized ? "minimized" : ""}`}>

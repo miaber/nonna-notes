@@ -1,21 +1,21 @@
-@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Lora:ital,wght@0,400;0,600;1,400&family=Montserrat:ital,wght@0,400;0,500;0,600;1,400&display=swap');
 
 :root {
-  /* Vintage cookbook: aged paper, distressed red, deep browns */
-  --bg: #f2ebe0;
-  --surface: #e8dfd0;
-  --surface-warm: #e2d9c8;
-  --border: #c4b8a4;
-  --border-dark: #a89880;
-  --accent: #8b3a3a;
-  --accent-dim: #6b2d2d;
-  --text: #3d3630;
-  --text-dim: #6b6358;
-  --green: #4a6b4a;
-  --red: #9e4a4a;
-  /* Aliases for components that still reference amber */
-  --amber: #8b3a3a;
-  --amber-dim: #6b2d2d;
+  /* Retro Italian food packaging: warm coral, golden mustard, cream */
+  --bg: #FBF4E9;
+  --surface: #F3E8D5;
+  --surface-warm: #EBE0CC;
+  --border: #D6C7A8;
+  --border-dark: #C4A86C;
+  --accent: #D95B43;
+  --accent-dim: #C04A34;
+  --text: #3A2E26;
+  --text-dim: #8A7A66;
+  --green: #5A8A5A;
+  --red: #C04A34;
+  --gold: #D4A535;
+  --amber: #D95B43;
+  --amber-dim: #C04A34;
 }
 
 * {
@@ -27,10 +27,10 @@
 body {
   background: var(--bg);
   background-image:
-    linear-gradient(180deg, rgba(196, 184, 164, 0.03) 0%, transparent 50%),
-    linear-gradient(90deg, rgba(196, 184, 164, 0.04) 0%, transparent 50%);
+    linear-gradient(180deg, rgba(212, 165, 53, 0.03) 0%, transparent 50%),
+    linear-gradient(90deg, rgba(212, 165, 53, 0.04) 0%, transparent 50%);
   color: var(--text);
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   min-height: 100vh;
 }
 
@@ -57,35 +57,216 @@ body {
   max-width: 540px;
 }
 
-/* Cooking: 2-row grid */
+/* ---- Home screen: three books ---- */
+.main-home {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem 1rem;
+}
+
+.home-books {
+  display: flex;
+  gap: 2.5rem;
+  justify-content: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.home-books::-webkit-scrollbar {
+  display: none;
+}
+.home-book {
+  flex-shrink: 0;
+}
+
+.home-book {
+  position: relative;
+  width: 280px;
+  height: 380px;
+  border-radius: 6px 14px 14px 6px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3rem 1.5rem 2rem;
+  font-family: 'Montserrat', sans-serif;
+  text-align: center;
+  transition: transform 0.18s, box-shadow 0.18s;
+  box-shadow: 3px 4px 12px rgba(0,0,0,0.2), inset -2px 0 6px rgba(255,255,255,0.15);
+  overflow: hidden;
+}
+
+.home-book::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.08'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+.home-book:hover {
+  transform: translateY(-6px) rotate(-1deg);
+  box-shadow: 5px 8px 20px rgba(0,0,0,0.25);
+}
+
+.home-book:active {
+  transform: translateY(-2px);
+}
+
+.home-book-spine {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 22px;
+  background: rgba(0,0,0,0.15);
+  border-radius: 6px 0 0 6px;
+}
+
+.home-book-oval {
+  background: rgba(255,255,255,0.88);
+  border-radius: 50%;
+  width: 190px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  flex-shrink: 0;
+}
+
+.home-book-oval span {
+  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-size: 1.85rem;
+  color: #2a2a2a;
+  line-height: 1.2;
+}
+
+.home-book-desc {
+  font-size: 0.95rem;
+  color: rgba(255,255,255,0.92);
+  line-height: 1.4;
+  font-style: italic;
+}
+
+.home-book-follow {
+  background: #e8734a;
+}
+
+.home-book-record {
+  background: #e8b84a;
+}
+
+.home-book-library {
+  background: #4a9de8;
+}
+
+/* ---- Follow a Recipe panel ---- */
+.follow-panel {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.follow-back {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-family: 'Montserrat', sans-serif;
+  font-size: 0.95rem;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.follow-back:hover {
+  color: var(--text);
+}
+
+.follow-title {
+  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-size: 2rem;
+  color: var(--text);
+  margin: 0 0 0.25rem;
+}
+
+@media (max-width: 780px) {
+  .home-books {
+    justify-content: flex-start;
+  }
+  .home-book {
+    width: 220px;
+    height: 300px;
+    flex-shrink: 0;
+    padding: 2.5rem 1.25rem 1.5rem;
+    border-radius: 4px 12px 12px 4px;
+  }
+  .home-book-spine {
+    width: 18px;
+    border-radius: 4px 0 0 4px;
+  }
+  .home-book-oval {
+    width: 150px;
+    height: 110px;
+    margin-bottom: 1.25rem;
+  }
+  .home-book-oval span {
+    font-size: 1.5rem;
+  }
+  .home-book-desc {
+    font-size: 0.85rem;
+  }
+}
+
+/* Cooking: 3-column grid (same as before); video spans cols 1–2 so it takes left space */
 .main-cooking {
   display: grid;
   grid-template-columns: 220px 1fr 280px;
   grid-template-rows: auto 1fr;
-  gap: 1rem 1.5rem;
+  gap: 1.25rem 1.5rem;
   align-items: start;
 }
 
 .main-cooking > .main-camera {
   max-width: none;
+  grid-column: 1 / 3;
 }
 
-.main-widgets {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  position: sticky;
-  top: 1.5rem;
-}
-
-.main-widgets .music-player {
-  position: static;
-  width: 100%;
+/* Video width grows (spans 2 cols) but height stays compact */
+.main-cooking .camera-container {
+  height: 290px;
+  aspect-ratio: unset;
 }
 
 .main-camera {
   min-width: 0;
+  position: relative;
 }
+
+/* Overlays on video (cooking mode) */
+.camera-overlay-timers {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 10;
+  max-width: 180px;
+}
+
+.camera-overlay-music {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  z-index: 10;
+}
+
 
 .main-conversation {
   display: flex;
@@ -124,18 +305,39 @@ body {
   min-width: 0;
 }
 
-/* --- Current step callout (directly under camera) --- */
-
+/* --- Current step callout (below video) --- */
 .current-step-callout {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  background: rgba(139, 58, 58, 0.08);
-  border: 1px solid rgba(139, 58, 58, 0.25);
+  background: rgba(217, 91, 67, 0.08);
+  border: 1px solid rgba(217, 91, 67, 0.25);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
-  margin-top: 0.5rem;
+  margin-top: 0.75rem;
   overflow: hidden;
+}
+
+/* Bright orange box variant (cook mode, below video) */
+.current-step-callout-orange {
+  background: #E85C2B;
+  border-color: #d94a2a;
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+}
+.current-step-callout-orange .current-step-label {
+  color: rgba(255,255,255,0.95);
+  font-size: 0.65rem;
+}
+.current-step-callout-orange .current-step-text {
+  color: #fff;
+  font-size: 0.875rem;
+}
+.current-step-callout-orange .current-step-images {
+  margin-top: 0.35rem;
+}
+.current-step-callout-orange .current-step-img {
+  max-height: 200px;
 }
 
 .current-step-images {
@@ -161,7 +363,7 @@ body {
 }
 
 .current-step-img.nonna-photo {
-  border: 2px solid var(--accent, #8b3a3a);
+  border: 2px solid var(--accent, #D95B43);
 }
 
 .current-step-content {
@@ -191,12 +393,12 @@ body {
   .main-cooking {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
+    gap: 1rem;
   }
-  .main-cooking > .main-widgets { order: 2; }
   .main-cooking > .main-camera { order: 1; }
-  .main-cooking > .main-conversation { order: 3; max-height: 200px !important; }
-  .main-cooking > .main-ingredients { order: 4; position: static; }
-  .main-cooking > .main-recipe { order: 5; grid-column: 1; }
+  .main-cooking > .main-conversation { order: 2; max-height: 200px !important; }
+  .main-cooking > .main-ingredients { order: 3; position: static; }
+  .main-cooking > .main-recipe { order: 4; grid-column: 1; }
 }
 
 .header {
@@ -214,7 +416,7 @@ body {
 }
 
 .library-btn {
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.85rem;
   font-weight: 500;
   letter-spacing: 0.03em;
@@ -225,7 +427,7 @@ body {
   padding: 0.5rem 1rem;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
-  box-shadow: 0 1px 2px rgba(61, 54, 48, 0.06);
+  box-shadow: 0 1px 2px rgba(58, 46, 38, 0.06);
 }
 
 .library-btn:hover {
@@ -243,12 +445,47 @@ body {
   color: var(--red);
 }
 
+.header-btn {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.header-btn-save {
+  background: var(--surface);
+  color: var(--green);
+  border-color: var(--green);
+}
+.header-btn-save:hover:not(:disabled) {
+  background: var(--green);
+  color: var(--bg);
+}
+.header-btn-save:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+.header-btn-end {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent-dim);
+}
+.header-btn-end:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--bg);
+}
+
 .logo {
-  font-family: 'Caveat', cursive;
-  font-size: 2.25rem;
-  font-weight: 600;
-  color: var(--accent);
+  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-size: 2.5rem;
+  font-weight: 400;
+  color: #D95B43;
   letter-spacing: 0.02em;
+  text-shadow: 0 2px 4px rgba(58, 46, 38, 0.2);
 }
 
 .logo-easter {
@@ -267,10 +504,10 @@ body {
   padding: 0.5rem 1rem;
   border-radius: 6px;
   font-size: 0.9rem;
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   z-index: 1000;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(61, 54, 48, 0.2);
+  box-shadow: 0 4px 16px rgba(58, 46, 38, 0.2);
 }
 
 .tagline {
@@ -280,15 +517,20 @@ body {
   text-transform: uppercase;
 }
 
+/* Video box: thumbnail-style nested frame — cream (inner) → golden → coral (outer); widths match thumbnail */
 .camera-container {
   position: relative;
   width: 100%;
   aspect-ratio: 4/3;
   background: var(--surface);
-  border-radius: 8px;
+  border-radius: 20px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  box-shadow: 0 2px 8px rgba(61, 54, 48, 0.08), inset 0 1px 0 rgba(255,255,255,0.4);
+  border: none;
+  box-shadow:
+    0 0 0 6px #F5EBD7,
+    0 0 0 12px #D4A535,
+    0 0 0 18px #D95B43,
+    0 4px 20px rgba(58, 46, 38, 0.15);
 }
 
 .camera-feed {
@@ -303,7 +545,7 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  background: rgba(61, 54, 48, 0.65);
+  background: rgba(58, 46, 38, 0.65);
   backdrop-filter: blur(4px);
   overflow-y: auto;
   padding: 1rem 0;
@@ -322,7 +564,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.9rem;
   line-height: 1.5;
   padding: 0.625rem 0.75rem;
@@ -344,18 +586,130 @@ body {
   color: var(--bg);
   border: none;
   padding: 0.875rem 2rem;
-  border-radius: 6px;
-  font-family: 'Lora', serif;
+  border-radius: 8px;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
   letter-spacing: 0.02em;
   transition: background 0.15s;
-  box-shadow: 0 2px 4px rgba(61, 54, 48, 0.15);
+  box-shadow: 0 2px 4px rgba(58, 46, 38, 0.15);
 }
 
 .start-btn:hover {
   background: var(--accent-dim);
+}
+
+.setup-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.setup-actions .start-btn {
+  flex: 1;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.upload-photo-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--border-dark);
+  padding: 0.875rem 1rem;
+  border-radius: 8px;
+  font-family: 'Montserrat', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.upload-photo-btn:hover {
+  border-color: var(--text);
+  background: var(--surface-warm);
+}
+
+.recipe-images-grid {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  width: 100%;
+}
+
+.recipe-image-thumb {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 2px solid var(--border-dark);
+  flex-shrink: 0;
+}
+
+.recipe-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.recipe-image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  background: var(--surface);
+}
+
+.recipe-image-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.recipe-image-remove:hover {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+.recipe-image-add {
+  width: 80px;
+  height: 80px;
+  border-radius: 6px;
+  border: 2px dashed var(--border-dark);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.recipe-image-add:hover {
+  border-color: var(--text);
+  color: var(--text);
 }
 
 .start-btn-secondary {
@@ -380,7 +734,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text-dim);
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.85rem;
   padding: 0.5rem;
   cursor: pointer;
@@ -393,7 +747,7 @@ body {
 }
 
 .persona-btn.active {
-  background: rgba(139, 58, 58, 0.12);
+  background: rgba(217, 91, 67, 0.12);
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 600;
@@ -405,14 +759,14 @@ body {
   border: 1px solid var(--accent);
   padding: 0.625rem;
   border-radius: 6px;
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .pantry-recipe-btn:hover:not(:disabled) {
-  background: rgba(139, 58, 58, 0.08);
+  background: rgba(217, 91, 67, 0.08);
 }
 
 .pantry-recipe-btn:disabled {
@@ -489,7 +843,7 @@ body {
 }
 
 .reconnecting-overlay {
-  background: rgba(61, 54, 48, 0.5);
+  background: rgba(58, 46, 38, 0.5);
   backdrop-filter: blur(2px);
   align-items: center;
   justify-content: center;
@@ -606,7 +960,7 @@ body {
   border: 1px solid var(--border);
   padding: 0.75rem;
   border-radius: 6px;
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.9rem;
   cursor: pointer;
   transition: all 0.15s;
@@ -625,17 +979,32 @@ body {
   gap: 0.5rem;
 }
 
+.camera-overlay-timers .timer-panel {
+  gap: 0.35rem;
+}
+.camera-overlay-timers .timer-card {
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+}
+.camera-overlay-timers .timer-label {
+  font-size: 0.75rem;
+}
+.camera-overlay-timers .timer-time {
+  font-size: 0.9rem;
+}
+
 .timer-card {
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--gold);
   border-radius: 6px;
   overflow: hidden;
   display: flex;
   align-items: center;
   padding: 0.625rem 0.75rem;
   gap: 0.75rem;
-  box-shadow: 0 1px 3px rgba(61, 54, 48, 0.06);
+  box-shadow: 0 1px 3px rgba(58, 46, 38, 0.06);
 }
 
 .timer-card.done {
@@ -664,7 +1033,7 @@ body {
   left: 0;
   top: 0;
   bottom: 0;
-  background: rgba(139, 58, 58, 0.12);
+  background: rgba(217, 91, 67, 0.12);
   transition: width 1s linear;
   pointer-events: none;
 }
@@ -679,6 +1048,7 @@ body {
   align-items: center;
   flex: 1;
   position: relative;
+  gap: 0.75rem;
 }
 
 .timer-label {
@@ -718,7 +1088,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.875rem;
-  box-shadow: 0 1px 3px rgba(61, 54, 48, 0.06);
+  box-shadow: 0 1px 3px rgba(58, 46, 38, 0.06);
 }
 
 .pantry-list {
@@ -757,7 +1127,7 @@ body {
   flex-shrink: 0;
   transition: background 0.1s;
 }
-.pantry-status-btn:hover { background: rgba(61, 54, 48, 0.08); }
+.pantry-status-btn:hover { background: rgba(58, 46, 38, 0.08); }
 
 .pantry-name { color: var(--text-dim); flex: 1; }
 
@@ -794,7 +1164,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.85rem;
   padding: 0.35rem 0.6rem;
 }
@@ -820,9 +1190,10 @@ body {
 .ingredients-panel {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-top: 2px solid var(--gold);
   border-radius: 6px;
-  padding: 0.875rem;
-  box-shadow: 0 1px 3px rgba(61, 54, 48, 0.06);
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(58, 46, 38, 0.06);
 }
 
 .ingredients-list {
@@ -917,15 +1288,16 @@ body {
 .recipe-steps {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-top: 2px solid var(--gold);
   border-radius: 6px;
-  padding: 0.875rem;
-  box-shadow: 0 1px 3px rgba(61, 54, 48, 0.06);
+  padding: 1rem 1.125rem;
+  box-shadow: 0 1px 3px rgba(58, 46, 38, 0.06);
 }
 
 .steps-heading {
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.9rem;
-  color: var(--amber);
+  color: var(--gold);
   margin-bottom: 0.625rem;
   font-weight: 400;
   letter-spacing: 0.06em;
@@ -1008,7 +1380,7 @@ body {
 }
 
 .step-img.nonna-photo {
-  border: 2px solid var(--accent, #8b3a3a);
+  border: 2px solid var(--accent, #D95B43);
 }
 
 /* --- Recipe Library --- */
@@ -1016,7 +1388,7 @@ body {
 .library-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(61, 54, 48, 0.6);
+  background: rgba(58, 46, 38, 0.6);
   backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
@@ -1035,7 +1407,7 @@ body {
   max-height: calc(100vh - 2rem);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(61, 54, 48, 0.25), 0 1px 0 rgba(255,255,255,0.3) inset;
+  box-shadow: 0 8px 32px rgba(58, 46, 38, 0.25), 0 1px 0 rgba(255,255,255,0.3) inset;
 }
 
 .library-header {
@@ -1048,7 +1420,7 @@ body {
 }
 
 .library-title {
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1.35rem;
   font-weight: 600;
   color: var(--accent);
@@ -1101,7 +1473,7 @@ body {
 }
 
 .library-card:hover {
-  border-color: rgba(139, 58, 58, 0.4);
+  border-color: rgba(217, 91, 67, 0.4);
 }
 
 .library-card-preview {
@@ -1137,7 +1509,7 @@ body {
 .library-detail-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(61, 54, 48, 0.7);
+  background: rgba(58, 46, 38, 0.7);
   backdrop-filter: blur(8px);
   z-index: 101;
   display: flex;
@@ -1156,7 +1528,7 @@ body {
   max-height: calc(100vh - 2rem);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(61, 54, 48, 0.3), 0 1px 0 rgba(255,255,255,0.3) inset;
+  box-shadow: 0 8px 32px rgba(58, 46, 38, 0.3), 0 1px 0 rgba(255,255,255,0.3) inset;
 }
 
 .library-detail-header {
@@ -1174,7 +1546,7 @@ body {
   flex: 1;
   min-width: 0;
   margin: 0;
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1.15rem;
   font-weight: 600;
   color: var(--text);
@@ -1260,7 +1632,7 @@ body {
 .library-edit-mode-btn {
   padding: 0.4rem 0.75rem;
   font-size: 0.85rem;
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   background: none;
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -1301,7 +1673,7 @@ body {
   width: 5rem;
   padding: 0.35rem 0.5rem;
   font-size: 0.85rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1375,7 +1747,7 @@ body {
 .library-edit-input {
   padding: 0.35rem 0.5rem;
   font-size: 0.85rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1420,7 +1792,7 @@ body {
   color: var(--text-dim);
   border-radius: 6px;
   cursor: pointer;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   transition: border-color 0.15s, color 0.15s;
 }
 
@@ -1439,7 +1811,7 @@ body {
 .library-cancel-btn {
   padding: 0.4rem 0.75rem;
   font-size: 0.85rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   background: none;
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -1479,7 +1851,7 @@ body {
   font-size: 0.85rem;
   cursor: pointer;
   padding: 0.35rem 0.5rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   transition: color 0.15s;
 }
 
@@ -1521,7 +1893,7 @@ body {
 }
 
 .library-card-name {
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
@@ -1657,7 +2029,7 @@ body {
   min-height: 4rem;
   padding: 0.5rem 0.625rem;
   font-size: 0.85rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1684,7 +2056,7 @@ body {
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  font-family: 'Lora', serif;
+  font-family: 'Montserrat', sans-serif;
   font-weight: 600;
   transition: opacity 0.15s;
 }
@@ -1746,7 +2118,7 @@ body {
   width: 100%;
   padding: 0.6rem 1rem;
   font-size: 0.9rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   font-weight: 500;
   background: var(--amber);
   color: var(--bg);
@@ -1768,7 +2140,7 @@ body {
   width: 100%;
   padding: 0.25rem 0;
   font-size: 1rem;
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-weight: 600;
   color: var(--text);
   background: transparent;
@@ -1787,9 +2159,10 @@ body {
 .recipe-panel {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-top: 2px solid var(--gold);
   border-radius: 6px;
-  padding: 0.875rem;
-  box-shadow: 0 1px 3px rgba(61, 54, 48, 0.06);
+  padding: 1rem 1.125rem;
+  box-shadow: 0 1px 3px rgba(58, 46, 38, 0.06);
 }
 
 .recipe-header-row {
@@ -1823,7 +2196,7 @@ body {
 }
 
 .about-recipe-btn {
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 0.75rem;
   font-weight: 500;
   color: var(--text-dim);
@@ -1854,7 +2227,7 @@ body {
 .about-popup-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(61, 54, 48, 0.5);
+  background: rgba(58, 46, 38, 0.5);
   backdrop-filter: blur(4px);
   z-index: 50;
   display: flex;
@@ -1872,7 +2245,7 @@ body {
   max-height: 80vh;
   overflow-y: auto;
   padding: 1.25rem;
-  box-shadow: 0 8px 32px rgba(61, 54, 48, 0.25), 0 1px 0 rgba(255,255,255,0.3) inset;
+  box-shadow: 0 8px 32px rgba(58, 46, 38, 0.25), 0 1px 0 rgba(255,255,255,0.3) inset;
 }
 
 .about-popup-header {
@@ -1884,7 +2257,7 @@ body {
 }
 
 .about-popup-header h3 {
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1.15rem;
   font-weight: 600;
   color: var(--text);
@@ -1972,10 +2345,25 @@ body {
   padding: 0.2rem 0;
 }
 
+.about-popup-notes {
+  margin-top: 1rem;
+}
+.about-popup-notes h4 {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 0 0.35rem;
+}
+.about-popup-notes .about-popup-desc {
+  margin-bottom: 0;
+}
+
 .recipe-header { margin-bottom: 0.75rem; }
 
 .recipe-name {
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1.15rem;
   font-weight: 600;
   color: var(--text);
@@ -1997,7 +2385,7 @@ body {
 
 .recipe-edit-name {
   width: 100%;
-  font-family: 'Playfair Display', serif;
+  font-family: 'Montserrat', sans-serif;
   font-size: 1.1rem;
   font-weight: 600;
   color: var(--text);
@@ -2022,7 +2410,7 @@ body {
   width: 4rem;
   padding: 0.2rem 0.4rem;
   font-size: 0.8rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -2052,7 +2440,7 @@ body {
   color: var(--bg);
   border: none;
   font-size: 0.8rem;
-  font-family: 'Lora', Georgia, serif;
+  font-family: 'Montserrat', sans-serif;
   font-weight: 500;
   padding: 0.25rem 0.7rem;
   border-radius: 5px;
@@ -2089,11 +2477,24 @@ body {
   align-items: center;
   justify-content: center;
   gap: 1.25rem;
-  background: var(--bg);
+  background: linear-gradient(135deg, #E8745F 0%, #D95B43 40%, #C04A34 100%);
   color: var(--text);
+}
+.auth-screen .logo {
+  font-family: 'Brush Script MT', 'Brush Script Std', cursive;
+  font-size: 3.5rem;
+  color: #F5EBD7;
+  text-shadow: 0 2px 6px rgba(58, 46, 38, 0.35);
+}
+.auth-screen .tagline {
+  color: rgba(251, 244, 233, 0.8);
 }
 .auth-google-btn {
   margin-top: 0.5rem;
   padding: 0.75rem 2rem;
   font-size: 1rem;
+  background: var(--bg);
+  color: var(--accent);
+  border: 2px solid var(--gold);
+  box-shadow: 0 2px 12px rgba(58, 46, 38, 0.2);
 }

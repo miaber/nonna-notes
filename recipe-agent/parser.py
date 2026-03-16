@@ -90,6 +90,21 @@ Schema:
 Prefer more, shorter steps over fewer long ones. One main action per step where possible. Do not combine multiple actions into a single long step.
 Include realistic timer_seconds for timed steps. Set visual_checkpoint true for steps requiring visual assessment."""
 
+IMAGE_PARSE_PROMPT = f"""You are looking at one or more images of a recipe. This could be a photo of a cookbook page, a handwritten recipe card, a screenshot of a recipe, a magazine clipping, etc.
+
+Extract the complete recipe from the image(s) and return it as valid JSON matching this exact schema. No markdown fences, no explanation, no extra text.
+
+Schema:
+{SCHEMA_DESCRIPTION}
+
+Rules:
+- Transcribe ingredients and steps faithfully from the image
+- If amounts are hard to read, make your best guess and note uncertainty in a tip
+- Prefer more, shorter steps — one main action per step where possible
+- Set timer_seconds (integer) for any timed step (boiling, roasting, frying, resting, etc.)
+- Set visual_checkpoint: true when cook must assess doneness visually
+- If the image is not a recipe or is unreadable, return a JSON object with just {{"error": "description of the problem"}}"""
+
 
 def _apply_step_images(recipe: RecipeSchema, step_images: dict[int, str]):
     """Attach per-step images from JSON-LD to the parsed recipe.
@@ -419,16 +434,29 @@ async def _search_and_parse_recipe(query: str, source_url: str | None = None) ->
         urls = [u for u in urls if u]
         if urls:
             source = "url"
-            grounding_url = urls[0]
+            raw_url = urls[0]
+            # Resolve Vertex AI Search redirect URLs to the actual recipe page
+            grounding_url = await _resolve_redirect(raw_url)
             print(f"[recipe-agent] grounding found {len(urls)} source(s): {grounding_url}", flush=True)
         else:
-            print("[recipe-agent] grounding returned no source URLs — recipe may be from model knowledge", flush=True)
-    except Exception:
-        pass
+            print(f"[recipe-agent] grounding returned no source URLs — meta={meta!r} chunks={chunks!r}", flush=True)
+    except Exception as _ge:
+        print(f"[recipe-agent] grounding metadata error: {_ge}", flush=True)
 
     recipe.source_url = source_url or grounding_url
     print(f"[recipe-agent] grounding recipe: '{recipe.name}' ({len(recipe.ingredients)} ingredients, {len(recipe.steps)} steps, source={source})", flush=True)
     return recipe, source
+
+
+async def _resolve_redirect(url: str) -> str:
+    """Follow redirects to get the final URL (e.g. vertexaisearch.cloud.google.com → actual recipe page)."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+            resp = await client.head(url)
+            return str(resp.url)
+    except Exception:
+        return url
 
 
 def _extract_text(response) -> str:
@@ -448,6 +476,67 @@ def _parse_retry_delay(err: Exception) -> float:
     msg = str(err)
     m = re.search(r"retry in ([\d.]+)s", msg, re.I)
     return float(m.group(1)) if m else 30.0
+
+
+_SUPPORTED_IMAGE_TYPES = frozenset({
+    "image/jpeg", "image/png", "image/webp", "image/gif",
+    "image/heif", "image/heic",
+})
+
+
+async def parse_recipe_images(images: list[tuple[bytes, str]], persona: str = "nonna") -> tuple[RecipeSchema, str]:
+    """Parse a recipe from one or more uploaded images using Gemini multimodal.
+
+    images is a list of (bytes, mime_type) tuples — one per page/photo.
+    """
+    # Build contents: all images first, then the text prompt (per Gemini docs)
+    contents: list = []
+    for i, (image_bytes, mime_type) in enumerate(images):
+        if mime_type not in _SUPPORTED_IMAGE_TYPES:
+            raise ValueError(f"Unsupported image type: {mime_type}")
+        contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+    contents.append(IMAGE_PARSE_PROMPT)
+
+    print(f"[recipe-agent] parsing recipe from {len(images)} image(s)", flush=True)
+
+    for try_i in range(3):
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+            break
+        except errors.ClientError as e:
+            if getattr(e, "code", None) == 429:
+                msg = str(e)
+                if "PerDay" in msg or "per day" in msg.lower() or "free_tier" in msg.lower():
+                    raise
+                if try_i < 2:
+                    delay = _parse_retry_delay(e)
+                    print(f"[recipe-agent] image parse rate limited, retrying in {delay:.0f}s…", flush=True)
+                    await asyncio.sleep(delay)
+                    continue
+            raise
+
+    raw_text = _extract_text(response).strip()
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    data = json.loads(raw_text)
+    if "error" in data and len(data) == 1:
+        raise ValueError(f"Could not parse recipe from image: {data['error']}")
+
+    recipe = RecipeSchema.model_validate(data)
+    import base64
+    for image_bytes, mime_type in images:
+        b64 = base64.b64encode(image_bytes).decode()
+        recipe.source_images.append(f"data:{mime_type};base64,{b64}")
+    print(f"[recipe-agent] image recipe: '{recipe.name}' ({len(recipe.ingredients)} ingredients, {len(recipe.steps)} steps, {len(recipe.source_images)} source image(s))", flush=True)
+    return recipe, "image"
 
 
 async def _call_gemini(prompt: str, source: str, attempt: int = 0) -> tuple[RecipeSchema, str]:
